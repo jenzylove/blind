@@ -1,0 +1,397 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {BlindSettlement, IERC20} from "../contracts/BlindSettlement.sol";
+
+/// Stand-ins for QoreChain's precompiles. The real ML-DSA-87 path is proven on testnet
+/// (docs/spikes). Here a "signature" is keccak256(pubkey, message), so only the holder
+/// of the matching test key can produce it, and any change to the message breaks it.
+contract MockStatus {
+    mapping(address => bytes) public keys;
+    mapping(address => bool) public unproven;
+    function set(address who, bytes calldata key, bool proven) external { keys[who] = key; unproven[who] = !proven; }
+    function pqcKeyStatus(address who) external view returns (bool, uint8, bytes memory, bool) {
+        bytes memory k = keys[who];
+        return (k.length > 0, 1, k, k.length > 0 && !unproven[who]);
+    }
+}
+
+contract MockVerify {
+    function pqcVerify(bytes calldata key, bytes calldata sig, bytes calldata message) external pure returns (bool) {
+        return sig.length == 32 && bytes32(sig) == keccak256(abi.encodePacked(key, message));
+    }
+}
+
+contract Token {
+    string public symbol;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+    constructor(string memory s) { symbol = s; }
+    function mint(address to, uint256 a) external { balanceOf[to] += a; }
+    function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
+    function transfer(address to, uint256 a) external returns (bool) { return _move(msg.sender, to, a); }
+    function transferFrom(address f, address to, uint256 a) external returns (bool) {
+        require(allowance[f][msg.sender] >= a, "allowance");
+        allowance[f][msg.sender] -= a;
+        return _move(f, to, a);
+    }
+    function _move(address f, address to, uint256 a) internal returns (bool) {
+        require(balanceOf[f] >= a, "balance");
+        balanceOf[f] -= a; balanceOf[to] += a; return true;
+    }
+}
+
+contract BlindSettlementTest is Test {
+    address constant VERIFY = address(0x0A01);
+    address constant STATUS = address(0x0A02);
+
+    BlindSettlement s;
+    Token fETH;
+    Token fUSD;
+    address agent = makeAddr("agent");
+    address settler = makeAddr("settler");
+    address treasury = makeAddr("treasury");
+    address alice = makeAddr("alice");
+    address bob = makeAddr("bob");
+    address carol = makeAddr("carol");
+    address mallory = makeAddr("mallory");
+
+    uint128 bid;
+    uint128 ask;
+    bytes32 constant SK = keccak256("batch secret key");
+
+    function _key(address who) internal pure returns (bytes memory) { return abi.encodePacked("key-of-", who); }
+    function _sign(address who, bytes memory message) internal pure returns (bytes memory) {
+        return abi.encodePacked(keccak256(abi.encodePacked(_key(who), message)));
+    }
+
+    function setUp() public {
+        vm.etch(STATUS, address(new MockStatus()).code);
+        vm.etch(VERIFY, address(new MockVerify()).code);
+        address[6] memory who = [agent, alice, bob, carol, mallory, settler];
+        for (uint256 i; i < who.length; ++i) MockStatus(STATUS).set(who[i], _key(who[i]), true);
+
+        fETH = new Token("fETH");
+        fUSD = new Token("fUSD");
+        s = new BlindSettlement(IERC20(address(fETH)), IERC20(address(fUSD)), agent, settler, treasury, 100);
+        // price = fUSD base units per fETH base unit x 1e18: 2,700 fUSD per fETH = 2700e6 * 1e18 / 1e18
+        bid = uint128(uint256(2_690e6) * 1e18 / 1e18);
+        ask = uint128(uint256(2_710e6) * 1e18 / 1e18);
+        // Market maker inventory sits in the contract.
+        fETH.mint(address(s), 1e18);
+        fUSD.mint(address(s), 3_000e6);
+        address[3] memory users = [alice, bob, carol];
+        for (uint256 i; i < 3; ++i) {
+            fETH.mint(users[i], 1e18);
+            fUSD.mint(users[i], 10_000e6);
+            vm.startPrank(users[i]);
+            fETH.approve(address(s), type(uint256).max);
+            fUSD.approve(address(s), type(uint256).max);
+            vm.stopPrank();
+        }
+    }
+
+    // ------------------------------------------------------------ helpers
+
+    function _batch() internal returns (uint64 id) {
+        vm.prank(settler);
+        id = s.create(keccak256(abi.encodePacked(SK)));
+    }
+
+    function _commit(uint64 id, uint128 maxNet) internal {
+        uint64 exp = uint64(block.number + 50);
+        s.commit(id, bid, ask, maxNet, exp, _sign(agent, s.quoteMessage(id, bid, ask, maxNet, exp)));
+    }
+
+    function _open(uint64 id) internal {
+        vm.roll(block.number + 1);
+        s.open(id, abi.encodePacked(SK));
+    }
+
+    function _ready(uint128 maxNet) internal returns (uint64 id) {
+        id = _batch();
+        s.post(id, hex"c0ffee");
+        _commit(id, maxNet);
+        _open(id);
+    }
+
+    function _order(address user, uint64 id, bool buy, uint256 amountIn, uint256 minOut) internal view returns (BlindSettlement.Order memory) {
+        return BlindSettlement.Order(user, id, uint64(block.number + 40), buy, amountIn, minOut, 1);
+    }
+
+    function _sigOf(BlindSettlement.Order memory o) internal view returns (bytes memory) {
+        return _sign(o.user, this.orderMessageOf(o));
+    }
+    function orderMessageOf(BlindSettlement.Order calldata o) external view returns (bytes memory) { return s.orderMessage(o); }
+
+    function _settle(uint64 id, BlindSettlement.Order[] memory os) internal {
+        bytes[] memory sigs = new bytes[](os.length);
+        for (uint256 i; i < os.length; ++i) sigs[i] = _sigOf(os[i]);
+        vm.prank(settler);
+        s.settle(id, os, sigs);
+    }
+
+    function _one(BlindSettlement.Order memory o) internal pure returns (BlindSettlement.Order[] memory a) {
+        a = new BlindSettlement.Order[](1); a[0] = o;
+    }
+
+    // ------------------------------------------------------------ pricing
+
+    function test_netBuyingClearsAtTheAsk() public {
+        uint64 id = _ready(0.5e18);
+        BlindSettlement.Order[] memory os = new BlindSettlement.Order[](3);
+        os[0] = _order(alice, id, true, 2_710e6, 0.99e18);   // buys about 1 fETH
+        os[1] = _order(bob, id, true, 1_355e6, 0.49e18);     // buys about 0.5 fETH
+        os[2] = _order(carol, id, false, 1e18, 2_600e6);     // sells 1 fETH
+        uint256 makerEth = fETH.balanceOf(address(s));
+        _settle(id, os);
+        (,,,,,,,,, uint128 price) = s.batches(id);
+        assertEq(price, ask);
+        assertEq(fETH.balanceOf(alice), 2e18);
+        assertEq(fETH.balanceOf(bob), 1.5e18);
+        assertEq(fUSD.balanceOf(carol), 10_000e6 + 2_710e6, "the seller also gets the ask: one price for all");
+        assertEq(makerEth - fETH.balanceOf(address(s)), 0.5e18, "maker sold the net 0.5 fETH");
+    }
+
+    function test_netSellingClearsAtTheBid() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order[] memory os = new BlindSettlement.Order[](2);
+        os[0] = _order(alice, id, false, 1e18, 2_600e6);
+        os[1] = _order(bob, id, true, 1_345e6, 0.4e18);
+        _settle(id, os);
+        (,,,,,,,,, uint128 price) = s.batches(id);
+        assertEq(price, bid);
+        assertEq(fUSD.balanceOf(alice), 10_000e6 + 2_690e6);
+        assertEq(fETH.balanceOf(bob), 1.5e18);
+    }
+
+    function test_crossingInsideTheBandMakerTradesNothing() public {
+        uint64 id = _ready(0);
+        BlindSettlement.Order[] memory os = new BlindSettlement.Order[](2);
+        os[0] = _order(alice, id, true, 2_700e6, 0.99e18);  // 2,700 fUSD
+        os[1] = _order(bob, id, false, 1e18, 2_600e6);      // 1 fETH
+        uint256 eth0 = fETH.balanceOf(address(s));
+        uint256 usd0 = fUSD.balanceOf(address(s));
+        _settle(id, os); // maxNet 0 still succeeds: users matched each other
+        (,,,,,,,,, uint128 price) = s.batches(id);
+        assertEq(price, 2_700e6);
+        assertEq(fETH.balanceOf(address(s)), eth0);
+        assertEq(fUSD.balanceOf(address(s)), usd0);
+    }
+
+    function testFuzz_priceAlwaysInsideTheCommittedBand(uint96 quoteIn, uint96 baseIn) public view {
+        vm.assume(quoteIn > 0 || baseIn > 0);
+        uint256 p = s.clearingPrice(bid, ask, quoteIn, baseIn);
+        assertGe(p, bid);
+        assertLe(p, ask);
+    }
+
+    // ------------------------------------------------------------ ordering
+
+    function test_cannotOpenBeforeCommit() public {
+        uint64 id = _batch();
+        vm.roll(block.number + 5);
+        vm.expectRevert(BlindSettlement.BadPhase.selector);
+        s.open(id, abi.encodePacked(SK));
+    }
+
+    function test_cannotOpenInTheCommitBlock() public {
+        uint64 id = _batch();
+        _commit(id, 1e18);
+        vm.expectRevert(BlindSettlement.BadPhase.selector);
+        s.open(id, abi.encodePacked(SK));
+    }
+
+    function test_cannotOpenWithTheWrongKey() public {
+        uint64 id = _batch();
+        _commit(id, 1e18);
+        vm.roll(block.number + 1);
+        vm.expectRevert("wrong batch key");
+        s.open(id, abi.encodePacked(keccak256("guess")));
+    }
+
+    function test_intakeClosesAtCommit() public {
+        uint64 id = _batch();
+        _commit(id, 1e18);
+        vm.expectRevert(BlindSettlement.BadPhase.selector);
+        s.post(id, hex"c0ffee");
+    }
+
+    function test_quoteCannotBeCommittedTwice() public {
+        uint64 id = _batch();
+        _commit(id, 1e18);
+        uint64 exp = uint64(block.number + 50);
+        bytes memory sig = _sign(agent, s.quoteMessage(id, bid, ask, 1e18, exp));
+        vm.expectRevert(BlindSettlement.BadPhase.selector);
+        s.commit(id, bid, ask, 1e18, exp, sig);
+    }
+
+    function test_onlyTheSettlerCreatesAndSettles() public {
+        vm.prank(mallory);
+        vm.expectRevert(BlindSettlement.NotSettler.selector);
+        s.create(keccak256("x"));
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order[] memory os = _one(_order(alice, id, true, 100e6, 0));
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(os[0]);
+        vm.prank(mallory);
+        vm.expectRevert(BlindSettlement.NotSettler.selector);
+        s.settle(id, os, sigs);
+    }
+
+    // ------------------------------------------------------------ drill: what a stolen settler key cannot do
+
+    function test_drill_forgedQuoteRefused() public {
+        uint64 id = _batch();
+        uint64 exp = uint64(block.number + 50);
+        // Settler signs a wildly wide quote with its own key: not the agent's, refused.
+        bytes memory sig = _sign(settler, s.quoteMessage(id, 1, type(uint128).max, type(uint128).max, exp));
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.commit(id, 1, type(uint128).max, type(uint128).max, exp, sig);
+    }
+
+    function test_drill_forgedOrderRefused() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order[] memory os = _one(_order(alice, id, true, 10_000e6, 0));
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sign(settler, this.orderMessageOf(os[0])); // settler signs for alice
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.settle(id, os, sigs);
+    }
+
+    function test_drill_tamperedOrderRefused() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0.03e18);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        o.amountIn = 10_000e6; // inflate after signing
+        o.minOut = 0;
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.settle(id, _one(o), sigs);
+    }
+
+    function test_drill_replayRefused() public {
+        // A standing order (batch 0) fills once, never again.
+        uint64 a = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, 0, true, 100e6, 0.03e18);
+        o.expiry = uint64(block.number + 500);
+        _settle(a, _one(o));
+        uint64 b = _ready(1e18);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(abi.encodeWithSelector(BlindSettlement.BadOrder.selector, 0));
+        s.settle(b, _one(o), sigs);
+    }
+
+    function test_drill_sameOrderTwiceInOneBatchRefused() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        BlindSettlement.Order[] memory os = new BlindSettlement.Order[](2);
+        os[0] = o; os[1] = o;
+        bytes[] memory sigs = new bytes[](2);
+        sigs[0] = _sigOf(o); sigs[1] = sigs[0];
+        vm.prank(settler);
+        vm.expectRevert(abi.encodeWithSelector(BlindSettlement.BadOrder.selector, 1));
+        s.settle(id, os, sigs);
+    }
+
+    function test_drill_orderForAnotherBatchRefused() public {
+        uint64 a = _ready(1e18);
+        uint64 b = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, a, true, 100e6, 0);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(abi.encodeWithSelector(BlindSettlement.BadOrder.selector, 0));
+        s.settle(b, _one(o), sigs);
+    }
+
+    function test_drill_userMinOutEnforced() public {
+        uint64 id = _ready(1e18);
+        // Alice demands more than the ask allows: the whole settle reverts, nothing moves.
+        BlindSettlement.Order memory o = _order(alice, id, true, 2_710e6, 1.01e18);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(abi.encodeWithSelector(BlindSettlement.MinOut.selector, 0));
+        s.settle(id, _one(o), sigs);
+        assertEq(fUSD.balanceOf(alice), 10_000e6);
+    }
+
+    function test_drill_makerSizeCapEnforced() public {
+        uint64 id = _ready(0.1e18);
+        bytes[] memory sigs = new bytes[](1);
+        BlindSettlement.Order memory o = _order(alice, id, true, 2_710e6, 0); // needs 1 fETH from the maker
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.TooBig.selector);
+        s.settle(id, _one(o), sigs);
+    }
+
+    function test_drill_inventoryCannotBeWithdrawnWithoutTheAgent() public {
+        bytes memory sig = _sign(settler, s.withdrawMessage(address(fETH), 1e18, 0));
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.withdraw(address(fETH), 1e18, sig);
+    }
+
+    function test_withdrawGoesOnlyToTheTreasuryOnce() public {
+        bytes memory sig = _sign(agent, s.withdrawMessage(address(fETH), 0.4e18, 0));
+        vm.prank(mallory); // anyone may submit it; the money still goes to the treasury
+        s.withdraw(address(fETH), 0.4e18, sig);
+        assertEq(fETH.balanceOf(treasury), 0.4e18);
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.withdraw(address(fETH), 0.4e18, sig); // nonce moved on
+    }
+
+    function test_unprovenKeyRefused() public {
+        MockStatus(STATUS).set(alice, _key(alice), false);
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.KeyNotProven.selector);
+        s.settle(id, _one(o), sigs);
+    }
+
+    // ------------------------------------------------------------ expiry
+
+    function test_staleQuoteCannotSettle() public {
+        uint64 id = _ready(1e18);
+        vm.roll(block.number + 60);
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        o.expiry = uint64(block.number + 10);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.BadPhase.selector);
+        s.settle(id, _one(o), sigs);
+    }
+
+    function test_expiredOrderRefused() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        o.expiry = uint64(block.number - 1);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(abi.encodeWithSelector(BlindSettlement.BadOrder.selector, 0));
+        s.settle(id, _one(o), sigs);
+    }
+
+    function test_batchSettlesOnce() public {
+        uint64 id = _ready(1e18);
+        _settle(id, _one(_order(alice, id, true, 100e6, 0)));
+        BlindSettlement.Order memory o = _order(bob, id, true, 100e6, 0);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sigOf(o);
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.BadPhase.selector);
+        s.settle(id, _one(o), sigs);
+    }
+}

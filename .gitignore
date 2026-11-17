@@ -7,3 +7,5 @@ node_modules/
 vault.json
 dist/
 build/
+/out/
+/cache/
