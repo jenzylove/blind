@@ -1,0 +1,60 @@
+{
+  "chainId": 9800,
+  "settlement": "0x4906cbdec09a89bd71aeccaf6e0b450c5a9cecc1",
+  "deployTx": "0xe571dbbd442951735218ff716f93de7dd41250a946e37ec0fccad96c3f4e377d",
+  "base": "fETH",
+  "quote": "fUSD",
+  "agent": "0x98b7426ea53F18Ad4FcC11B52a3B8d008C02308e",
+  "settler": "0xe203D8214722f17101ab85648ec900bb91fbe891",
+  "treasury": "0x95763489fF56D3ac6dBc34d1BF3c72ccb7487E4A",
+  "settleWindowBlocks": 600,
+  "stockTx": "FBDDDE62A9FA0607C4D8D73CD0B49A5A87430B93A24F62769C8E35AE2092F81E",
+  "firstBatch": {
+    "batch": 2,
+    "note": "batch 1 was created but never used (a seal purpose format error stopped the run)",
+    "create": "0xf67a3a1b420a79583f2605d7c97c01dd86279db4dd26bc2c0e3c5fa07b579593",
+    "posts": [
+      "0xbc2ca26d9e6ea881d04d51a5a075b9b6448b4e98d41b2516f62c3fb8c2d5adb9",
+      "0x78578e5fe1a68776161b9dcca4540f8b465a581233fd12d647d3b22ebb69fe37"
+    ],
+    "commit": {
+      "hash": "0xb2336e128dfde45d49bd74432525682583ee1914b871acba4bd319776d2ae99e",
+      "block": 10279255,
+      "bid": "2764.880311 fUSD/fETH",
+      "ask": "2781.51951 fUSD/fETH",
+      "poolMid": "2773.199911 fUSD/fETH",
+      "maxNet": "0.01 fETH"
+    },
+    "open": {
+      "hash": "0xa00ed3d43861a8f179ad2ab786da41bad4ea687395f6ded3e7a6db513dcb2f03",
+      "block": 10279258
+    },
+    "settle": {
+      "hash": "0x32725347e8de99288d457800d8f05a6662fe26c6edfd4dbf8e86e43946d06d4c",
+      "block": 10279261,
+      "gas": 548091,
+      "price": "2781.51951 fUSD/fETH (the ask: net buying)"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "side": "buy",
+        "in": "20 fUSD",
+        "out": "0.007190314476708452 fETH",
+        "plainAmm": "refused: impact 505 bps over the pool price, cap 500 bps"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "side": "sell",
+        "in": "0.004 fETH",
+        "out": "11.126078 fUSD",
+        "plainAmm": "10.742779 fUSD"
+      }
+    ],
+    "maker": {
+      "base": "-0.003190314476708452 fETH (sold)",
+      "quote": "+8.873922 fUSD"
+    },
+    "ammQuotesTakenAt": "block ~10279560, after settlement; Blind does not trade on the pool, so its reserves were unchanged by the batch"
+  }
+}
