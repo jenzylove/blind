@@ -1,0 +1,924 @@
+[
+  {
+    "startedAt": "2026-11-18T22:03:27.938Z",
+    "dropped": [],
+    "batch": 3,
+    "create": {
+      "hash": "0x64fb749266de2cf4f61cbf8dd7ff0f3c6eec75739dac64003ff3d4629d3bf57c",
+      "block": 10339655,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x8408dc5d5e2ff89d0711f32adcc24bd598834fb3f054af9f2dc53a036421979c",
+        "block": 10339659,
+        "gas": 211731,
+        "bytes": 6648
+      },
+      {
+        "hash": "0x3f70e6411a1fa22e135efc1a9e2fa4f0339d9907bc2dd9646f2fe45cafeaf355",
+        "block": 10339663,
+        "gas": 194679,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xcf9660c5ed9ed6e22b173e7da37b3c3a5fd74f2114a80a3ca5247fa1d17ec521",
+      "block": 10339666,
+      "gas": 254405,
+      "bid": "2760953048",
+      "ask": "2932351269",
+      "maxNet": "3515189395685475",
+      "mid": "2845460978",
+      "hedgeAsk": "2929129227",
+      "hedgeBid": "2766208845",
+      "marginBps": "15",
+      "skewBps": "4",
+      "volBps": "0",
+      "quoteExpiry": 10339964,
+      "inventory": {
+        "cBase": "46809685523291548",
+        "cQuote": "108873922",
+        "hBase": "21821822580716099",
+        "hQuote": "45000000"
+      }
+    },
+    "open": {
+      "hash": "0x9889c1d2666800dd7a097cf30ffd3c0d4c9e7784a2cc6d8455e260f1118ba259",
+      "block": 10339669,
+      "gas": 32712
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x313aeba19c8ff0a69e90beccf68f2d865ac3946981f39ac2872390fa97282e90",
+      "block": 10339671,
+      "gas": 531341,
+      "price": "2760953048",
+      "makerBase": "68075856728992",
+      "makerQuote": "-187954"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "4330870",
+        "amountOut": "1568614143271008",
+        "plainAmm": "1500848593268718"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "1636690000000000",
+        "amountOut": "4518824",
+        "plainAmm": "4588549"
+      }
+    ],
+    "hedge": {
+      "skipped": "net below 0.0001 fETH"
+    },
+    "markout": {
+      "block": 10339701,
+      "mid": "2845460978",
+      "fill": "5753",
+      "afterHedge": "5753"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:06:02.148Z",
+    "dropped": [],
+    "batch": 4,
+    "create": {
+      "hash": "0xc8a7d554e11c4e465917ec563c6e2b0bb1ffa932bdf02f939af43544f689a73f",
+      "block": 10339762,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x718cd76a4d3b0212b36784dcf30221f8dbbf2becf41f2c6dcd12388c0f6f7fa9",
+        "block": 10339765,
+        "gas": 211767,
+        "bytes": 6648
+      },
+      {
+        "hash": "0xe99efe5daef76d1e1645d87ecf0956e55a95676ec2b63120730bf9504c2a3900",
+        "block": 10339767,
+        "gas": 194559,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xb1e813ca1df4d768a3df06885d91796e50213905422286ecf35cab552a886db9",
+      "block": 10339770,
+      "gas": 254393,
+      "bid": "2803302970",
+      "ask": "2886317718",
+      "maxNet": "1384771580118520",
+      "mid": "2845460978",
+      "hedgeAsk": "2883146258",
+      "hedgeBid": "2808639385",
+      "marginBps": "15",
+      "skewBps": "4",
+      "volBps": "0",
+      "quoteExpiry": 10340068,
+      "inventory": {
+        "cBase": "46877761380020540",
+        "cQuote": "108685968",
+        "hBase": "21821822580716099",
+        "hQuote": "45000000"
+      }
+    },
+    "open": {
+      "hash": "0x7fa91ae8429eb6d069ecdc5b2f448477124e3fc48cef2b62b28f8efa886849c1",
+      "block": 10339773,
+      "gas": 32712
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0xde07e225b5e0927ce064af940594857cd476ea9f77b4cbcca22a6643f88919ff",
+      "block": 10339775,
+      "gas": 531461,
+      "price": "2803302970",
+      "makerBase": "791139565512536",
+      "makerQuote": "-2217803"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "1681983",
+        "amountOut": "600000434487464",
+        "plainAmm": "586814928911179"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "1391140000000000",
+        "amountOut": "3899786",
+        "plainAmm": "3907031"
+      }
+    ],
+    "hedge": {
+      "hash": "A805C933F0B90250E79D089EA9EED4B7514970B1458433386F01EE73D62F4E93",
+      "height": 10339779,
+      "baseDelta": "-791139565512536",
+      "quoteDelta": "2231563"
+    },
+    "markout": {
+      "block": 10339805,
+      "mid": "2812966202",
+      "fill": "7645",
+      "afterHedge": "13760"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:06:32.678Z",
+    "dropped": [],
+    "batch": 5,
+    "create": {
+      "hash": "0x0abe118c4ac43098b2f12c8dbce7007e475255b15036366610518f2aca309c33",
+      "block": 10339784,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x44adcf30b52bbb00c923a7b8a0f5fea88e486542286035df1720f6c0f050889b",
+        "block": 10339787,
+        "gas": 211695,
+        "bytes": 6648
+      },
+      {
+        "hash": "0xa0468ffa0f89af317a9d742617bf419cd20511d0f1112429a32cee7718818692",
+        "block": 10339789,
+        "gas": 194715,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0x7d58c4768a33b9ed368a2438de7d51ac3859dde5c65267ab9f95fcb547503800",
+      "block": 10339792,
+      "gas": 254429,
+      "bid": "2739636329",
+      "ask": "2885848575",
+      "maxNet": "1392754897552329",
+      "mid": "2812966202",
+      "hedgeAsk": "2850220815",
+      "hedgeBid": "2776564639",
+      "marginBps": "129",
+      "skewBps": "4",
+      "volBps": "114",
+      "quoteExpiry": 10340090,
+      "inventory": {
+        "cBase": "47668900945533076",
+        "cQuote": "106468165",
+        "hBase": "21030683015203563",
+        "hQuote": "47231563"
+      }
+    },
+    "open": {
+      "hash": "0x5395286bb9f863fac9f1379be0cfe7d1c4be2193aa29e9aefba11d6f927e5b1f",
+      "block": 10339795,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x5334cae152823f77beaf6c3d95ae1e50b1b9086862844a410e6d67b83cd2218a",
+      "block": 10339797,
+      "gas": 531473,
+      "price": "2739636329",
+      "makerBase": "97120430859213",
+      "makerQuote": "-266074"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "1550496",
+        "amountOut": "565949569140787",
+        "plainAmm": "547360780857895"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "663070000000000",
+        "amountOut": "1816570",
+        "plainAmm": "1850724"
+      }
+    ],
+    "hedge": {
+      "skipped": "net below 0.0001 fETH"
+    },
+    "markout": {
+      "block": 10339827,
+      "mid": "2764246308",
+      "fill": "2390",
+      "afterHedge": "2390"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:06:56.498Z",
+    "dropped": [],
+    "batch": 6,
+    "create": {
+      "hash": "0x96d7a890abdf3efb5349678df94c4fb1a3dc350dfcb8b51ad767baa116a659dd",
+      "block": 10339800,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0xd04ac15f05f32d88ad08897d4ff77f5f2dd160f756a97de15212c17e1bf8c93b",
+        "block": 10339803,
+        "gas": 211707,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xc0ba114c77c1fea6c7e6e548ce2432601b88827d5e4bbe9350b4a37ef745b941",
+      "block": 10339807,
+      "gas": 254597,
+      "bid": "2739636329",
+      "ask": "2885848575",
+      "maxNet": "1392754897552329",
+      "mid": "2812966202",
+      "hedgeAsk": "2850220815",
+      "hedgeBid": "2776564639",
+      "marginBps": "129",
+      "skewBps": "4",
+      "volBps": "114",
+      "quoteExpiry": 10340105,
+      "inventory": {
+        "cBase": "47766021376392289",
+        "cQuote": "106202091",
+        "hBase": "21030683015203563",
+        "hQuote": "47231563"
+      }
+    },
+    "open": {
+      "hash": "0x5eebccf2574a2be543269e24f0892a15baf32a8637fedef8af6ff44da721f134",
+      "block": 10339811,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x00886cc0f72ac248cab24eb64379e5ff5a54f56e0723c53b6da407eaf9009d37",
+      "block": 10339814,
+      "gas": 306559,
+      "price": "2739636329",
+      "makerBase": "1212210000000000",
+      "makerQuote": "-3321014"
+    },
+    "fills": [
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "1212210000000000",
+        "amountOut": "3321014",
+        "plainAmm": "3370136"
+      }
+    ],
+    "hedge": {
+      "hash": "119A8F80E197AA700EB070F59C4BBCFC12ED6A8D342F57AE9128564438B646A3",
+      "height": 10339818,
+      "baseDelta": "-1212210000000000",
+      "quoteDelta": "3370136"
+    },
+    "markout": {
+      "block": 10339844,
+      "mid": "2746068409",
+      "fill": "7797",
+      "afterHedge": "49122"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:07:27.251Z",
+    "dropped": [],
+    "batch": 7,
+    "create": {
+      "hash": "0xb2475a87c6b459165398eab7e9e73682c5f6f7a50e0315317c6fdd4b63347694",
+      "block": 10339822,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x6e06700ea835b285dda431fbbf7b1d02ab7fee8d852123102f73979000a9527b",
+        "block": 10339825,
+        "gas": 211575,
+        "bytes": 6648
+      },
+      {
+        "hash": "0x62fe88f1690782b068cd30eea73f16f976c94b344f949b8967143bd8ed00a399",
+        "block": 10339827,
+        "gas": 194571,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xe245ec36e1f2a4a7505da16566e500c94213b37980e6a5ec037278f5d8bedcef",
+      "block": 10339830,
+      "gas": 254681,
+      "bid": "2676088666",
+      "ask": "2852391876",
+      "maxNet": "1404987198461419",
+      "mid": "2764246308",
+      "hedgeAsk": "2800856124",
+      "hedgeBid": "2728475394",
+      "marginBps": "188",
+      "skewBps": "4",
+      "volBps": "173",
+      "quoteExpiry": 10340128,
+      "inventory": {
+        "cBase": "48978231376392289",
+        "cQuote": "102881077",
+        "hBase": "19818473015203563",
+        "hQuote": "50601699"
+      }
+    },
+    "open": {
+      "hash": "0x95fc566a7c211e2c1aef3fe44299414e5bee3c4e6477b55753561305d817a8de",
+      "block": 10339833,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x32c4b6879785b01b6c3edc853df4584d8f6fddcc5054132ad8d9bf6fc31548e7",
+      "block": 10339835,
+      "gas": 531365,
+      "price": "2676088666",
+      "makerBase": "460534924670587",
+      "makerQuote": "-1232432"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "3444889",
+        "amountOut": "1287285075329413",
+        "plainAmm": "1231491400564503"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "1747820000000000",
+        "amountOut": "4677321",
+        "plainAmm": "4757310"
+      }
+    ],
+    "hedge": {
+      "hash": "A564FC8319564326CFB9ABD574858A7972CEBC1A307AE9777AECC26D05607971",
+      "height": 10339839,
+      "baseDelta": "-460534924670587",
+      "quoteDelta": "1265036"
+    },
+    "markout": {
+      "block": 10339865,
+      "mid": "2786883865",
+      "fill": "51025",
+      "afterHedge": "32604"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:07:58.755Z",
+    "dropped": [],
+    "batch": 8,
+    "create": {
+      "hash": "0xcf5353a71967c74c6b37badb2354b0ba6d55995e531ef1d626e813442d43180d",
+      "block": 10339844,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x76269ffd8c5651515c04f45e8307e2c8c502326a9073810c4ad56e92b538ce7b",
+        "block": 10339847,
+        "gas": 211731,
+        "bytes": 6648
+      },
+      {
+        "hash": "0x6a282e62de9a998706ae28f14a5f321018502ec4727e4b6e1ea2b117abcfc005",
+        "block": 10339849,
+        "gas": 194571,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xa661eaebc602b02dd445bfbaeb6ad54996314e0322b0ce3a36680dbf6a2ee34e",
+      "block": 10339852,
+      "gas": 254489,
+      "bid": "2658490349",
+      "ask": "2833634597",
+      "maxNet": "1409634414519459",
+      "mid": "2746068409",
+      "hedgeAsk": "2782437743",
+      "hedgeBid": "2710532575",
+      "marginBps": "188",
+      "skewBps": "4",
+      "volBps": "173",
+      "quoteExpiry": 10340150,
+      "inventory": {
+        "cBase": "49438766301062876",
+        "cQuote": "101648645",
+        "hBase": "19357938090532976",
+        "hQuote": "51866735"
+      }
+    },
+    "open": {
+      "hash": "0x09e5957a31decf6e4731be7cac54319cd05514064d2fb21455f8836be852740f",
+      "block": 10339855,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0xee3fff4d6d33202abde84fa05831c9d59bf51bd6ca1c4a2d2374ec89f0d5b07d",
+      "block": 10339857,
+      "gas": 531231,
+      "price": "2833634597",
+      "makerBase": "-1024670228847558",
+      "makerQuote": "2903542"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "4743845",
+        "amountOut": "1674120228847558",
+        "plainAmm": "1701324503105035"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "649450000000000",
+        "amountOut": "1840303",
+        "plainAmm": "1769871"
+      }
+    ],
+    "hedge": {
+      "hash": "87A4F6A9888EC7E5DF1690D15BBDCE2C7D468811C2928526DB5B946D2E2B0983",
+      "height": 10339861,
+      "baseDelta": "1024670326780309",
+      "quoteDelta": "-2843158"
+    },
+    "markout": {
+      "block": 10339887,
+      "mid": "2821602101",
+      "fill": "12331",
+      "afterHedge": "60384"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:08:29.145Z",
+    "dropped": [],
+    "batch": 9,
+    "create": {
+      "hash": "0x5d020bd1ca1f97cc10de6ff436ffa53e8ad5eec7eb18d9034dc082c5548386f5",
+      "block": 10339865,
+      "gas": 50953
+    },
+    "posts": [
+      {
+        "hash": "0xec885446091b8041c73a4c99283a0ba64abba1065fd5ca826c4f20d668c3f1ab",
+        "block": 10339868,
+        "gas": 211779,
+        "bytes": 6648
+      },
+      {
+        "hash": "0xcbcbe7ef854eda1fe711e44948805617670d021afbf68749af44967544dd4baa",
+        "block": 10339870,
+        "gas": 194703,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xfc44b1ee50c84e87c5298cbebaec746b599b620fba7ca73936bda427a3120424",
+      "block": 10339873,
+      "gas": 254657,
+      "bid": "2698004263",
+      "ask": "2875750823",
+      "maxNet": "1399284209198446",
+      "mid": "2786883865",
+      "hedgeAsk": "2823793032",
+      "hedgeBid": "2750820008",
+      "marginBps": "188",
+      "skewBps": "4",
+      "volBps": "173",
+      "quoteExpiry": 10340171,
+      "inventory": {
+        "cBase": "48414096072215318",
+        "cQuote": "104552187",
+        "hBase": "20382608417313285",
+        "hQuote": "49023577"
+      }
+    },
+    "open": {
+      "hash": "0xb1a9ae526c972b3adc0c913fb4e9a93faa6ba96685fd067a03599c20f28072c0",
+      "block": 10339876,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x80236a9c3bda685f6e1adf2d7a26c20ce8c2b4067a8037eb8df44cdf9fd19fde",
+      "block": 10339878,
+      "gas": 531339,
+      "price": "2875750823",
+      "makerBase": "-854048186911950",
+      "makerQuote": "2456030"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "4722409",
+        "amountOut": "1642148186911950",
+        "plainAmm": "1669073349062392"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "788100000000000",
+        "amountOut": "2266379",
+        "plainAmm": "2177403"
+      }
+    ],
+    "hedge": {
+      "hash": "B836F7654DD4F83D45545147D2B6C7537C7DBA3192EF2AB072C4F33DBF9B5AEF",
+      "height": 10339882,
+      "baseDelta": "854048209641875",
+      "quoteDelta": "-2402105"
+    },
+    "markout": {
+      "block": 10339908,
+      "mid": "2791568917",
+      "fill": "71896",
+      "afterHedge": "53925"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:08:59.674Z",
+    "dropped": [],
+    "batch": 10,
+    "create": {
+      "hash": "0x3017a4c2a37e8f49259fcfa5c0b40ee53f68d7e3855611a4e0f15b5546fe6a70",
+      "block": 10339886,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x003405321fe981ba7dab449b2d946304f7d8ef7745f2298ffd41f88dac806786",
+        "block": 10339889,
+        "gas": 211731,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xe32cf7d57013d841b3373db116290c50d79db54fe035bc24581b555e4d77ca34",
+      "block": 10339893,
+      "gas": 254273,
+      "bid": "2731615436",
+      "ask": "2911576543",
+      "maxNet": "1390657459606104",
+      "mid": "2821602101",
+      "hedgeAsk": "2858971468",
+      "hedgeBid": "2785089148",
+      "marginBps": "188",
+      "skewBps": "4",
+      "volBps": "173",
+      "quoteExpiry": 10340191,
+      "inventory": {
+        "cBase": "47560047885303368",
+        "cQuote": "107008217",
+        "hBase": "21236656626955160",
+        "hQuote": "46621472"
+      }
+    },
+    "open": {
+      "hash": "0xf25ccfdbb72bea229a9f2b5a6843fd4225db9f5b52d0996016e51d0a26176318",
+      "block": 10339896,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0xf7a9f99ee6d76e7fc9f25f49137d4fcd370bb288e0a38fb05d71274556b0f6bf",
+      "block": 10339898,
+      "gas": 306295,
+      "price": "2731615436",
+      "makerBase": "740090000000000",
+      "makerQuote": "-2021641"
+    },
+    "fills": [
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "740090000000000",
+        "amountOut": "2021641",
+        "plainAmm": "2070875"
+      }
+    ],
+    "hedge": {
+      "hash": "AEFBF1A5C9889FDD7596E9CC48DE8CF65B87C9A410E79A2727519A742AD26255",
+      "height": 10339902,
+      "baseDelta": "-740090000000000",
+      "quoteDelta": "2070875"
+    },
+    "markout": {
+      "block": 10339928,
+      "mid": "2824633816",
+      "fill": "68842",
+      "afterHedge": "49234"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:09:28.581Z",
+    "dropped": [],
+    "batch": 11,
+    "create": {
+      "hash": "0x7c494cf60598b4a3f18a1ca4c689394a5d1c89dac5868679b01c55be8826eb7f",
+      "block": 10339907,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0xfb2ba2a1531d2c25ef9d5e2259d18faedc5664f79ad6bfbff17453e49dda8245",
+        "block": 10339911,
+        "gas": 211779,
+        "bytes": 6648
+      },
+      {
+        "hash": "0x290d1889dcec49d7578c4ab13c40c3ccd5b01b3ecfabec45e88643429332ea01",
+        "block": 10339913,
+        "gas": 194595,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0x7e04c3c56068d1c8d68a93dec05a6b1241d5a231422b36e2d6fd7a8150c2c09f",
+      "block": 10339916,
+      "gas": 254381,
+      "bid": "2709428853",
+      "ask": "2873514294",
+      "maxNet": "1398125640515195",
+      "mid": "2791568917",
+      "hedgeAsk": "2828540501",
+      "hedgeBid": "2755444781",
+      "marginBps": "163",
+      "skewBps": "4",
+      "volBps": "148",
+      "quoteExpiry": 10340213,
+      "inventory": {
+        "cBase": "48300137885303368",
+        "cQuote": "104986576",
+        "hBase": "20496566626955160",
+        "hQuote": "48692347"
+      }
+    },
+    "open": {
+      "hash": "0x3a2bd7874a43029dcf19d810ee642bf63bba2bf9f98d14a156581bcd09dcea98",
+      "block": 10339919,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x394b7827228462fd91cfedd393f72e2befaa6e08d364ae5cfc2137ee68332393",
+      "block": 10339921,
+      "gas": 531315,
+      "price": "2873514294",
+      "makerBase": "-811708441580649",
+      "makerQuote": "2332456"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "4705720",
+        "amountOut": "1637618441580649",
+        "plainAmm": "1660471201135991"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "825910000000000",
+        "amountOut": "2373264",
+        "plainAmm": "2285073"
+      }
+    ],
+    "hedge": {
+      "hash": "F6040BFDBBA3183A00E2CC21DC82E3A76C1F9BC2457AE1E76737E2DF0168FC5F",
+      "height": 10339925,
+      "baseDelta": "811708558316893",
+      "quoteDelta": "-2286166"
+    },
+    "markout": {
+      "block": 10339951,
+      "mid": "2824633816",
+      "fill": "39677",
+      "afterHedge": "46290"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:10:01.492Z",
+    "dropped": [],
+    "batch": 12,
+    "create": {
+      "hash": "0xdb986a6ebc11971bc735b7820d87677888fb90cc2b6bc6041923a323ef4611ac",
+      "block": 10339930,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0x9b1d0aea8171c02756bfa78a3389bc7a4815b9a84a47005ca3992ea93ade5a1a",
+        "block": 10339933,
+        "gas": 211647,
+        "bytes": 6648
+      },
+      {
+        "hash": "0xb0aa3a685a5ed449e99aa1faf5deeb99dd3c676c956e84ddb7cda51139fc61b0",
+        "block": 10339935,
+        "gas": 194607,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0x70cd5c3e82129c8e32ce05fec3be69016f1265ba1df6f08a11f57ab95b406320",
+      "block": 10339938,
+      "gas": 254501,
+      "bid": "2741520864",
+      "ask": "2907550510",
+      "maxNet": "1389926564168559",
+      "mid": "2824633816",
+      "hedgeAsk": "2862044011",
+      "hedgeBid": "2788081831",
+      "marginBps": "163",
+      "skewBps": "4",
+      "volBps": "148",
+      "quoteExpiry": 10340235,
+      "inventory": {
+        "cBase": "47488429443722719",
+        "cQuote": "107319032",
+        "hBase": "21308275185272053",
+        "hQuote": "46406181"
+      }
+    },
+    "open": {
+      "hash": "0x23fc98f8b34b37125140c6e610b0cdb28c957f32bb9c0254471c5f62a3aaddd8",
+      "block": 10339941,
+      "gas": 32724
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0xb8c66ca930b46cb83d20b767a49fa1a145258306e5616bccbd17c728227aff45",
+      "block": 10339943,
+      "gas": 531197,
+      "price": "2741520864",
+      "makerBase": "36833459247911",
+      "makerQuote": "-100979"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "3953620",
+        "amountOut": "1442126540752089",
+        "plainAmm": "1381483535331366"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "1478960000000000",
+        "amountOut": "4054599",
+        "plainAmm": "4120829"
+      }
+    ],
+    "hedge": {
+      "skipped": "net below 0.0001 fETH"
+    },
+    "markout": {
+      "block": 10339973,
+      "mid": "2855184123",
+      "fill": "4187",
+      "afterHedge": "4187"
+    }
+  },
+  {
+    "startedAt": "2026-11-18T22:10:26.304Z",
+    "dropped": [],
+    "batch": 13,
+    "create": {
+      "hash": "0xe92ac5ca59869f42eb65d1054e7bd5c5fd048d38314b50b7efd126b892a290a6",
+      "block": 10339947,
+      "gas": 50977
+    },
+    "posts": [
+      {
+        "hash": "0xb10e809a18a8cb508c8322471bf748da0e4c2cebab750a8cc9d2b5430ea2cfb4",
+        "block": 10339951,
+        "gas": 211587,
+        "bytes": 6648
+      },
+      {
+        "hash": "0x87682c71d7cbd74ce11cc60b9f5d95eff371a25453a9d64526219ded21459f47",
+        "block": 10339953,
+        "gas": 194643,
+        "bytes": 6648
+      }
+    ],
+    "commit": {
+      "hash": "0xd361f079cbb2ddc196dad08f77c72fdea46da0aceb61d20ec55229ea6a3aed7b",
+      "block": 10339956,
+      "gas": 254393,
+      "bid": "2748212260",
+      "ask": "2900681605",
+      "maxNet": "1389926564168559",
+      "mid": "2824633816",
+      "hedgeAsk": "2862044011",
+      "hedgeBid": "2788081831",
+      "marginBps": "139",
+      "skewBps": "4",
+      "volBps": "124",
+      "quoteExpiry": 10340254,
+      "inventory": {
+        "cBase": "47525262902970630",
+        "cQuote": "107218053",
+        "hBase": "21308275185272053",
+        "hQuote": "46406181"
+      }
+    },
+    "open": {
+      "hash": "0x5636f9dc29fd7311f173a1c2f5f093e9cca31b0be9d28a58159d39c57865bd2e",
+      "block": 10339959,
+      "gas": 32712
+    },
+    "settled": true,
+    "settle": {
+      "hash": "0x3054f598beaf6b2db440dca82c4451f965f94a317020fbf46e0521312be0705c",
+      "block": 10339961,
+      "gas": 531243,
+      "price": "2900681605",
+      "makerBase": "-737414388942887",
+      "makerQuote": "2139005"
+    },
+    "fills": [
+      {
+        "user": "0x122e8F98Dc8C32330a2811876F57DC0a1e56918D",
+        "buy": true,
+        "amountIn": "3946158",
+        "amountOut": "1360424388942887",
+        "plainAmm": "1378902139464303"
+      },
+      {
+        "user": "0x0046E8b72D7Ce9C8aacFdF2AC8b1E3d0Cf6C96f5",
+        "buy": false,
+        "amountIn": "623010000000000",
+        "amountOut": "1807153",
+        "plainAmm": "1746611"
+      }
+    ],
+    "hedge": {
+      "hash": "B4248F281D5FDCEA73F1061EB7622171BD82C8D071941F154F483497AC98606A",
+      "height": 10339964,
+      "baseDelta": "737414675912833",
+      "quoteDelta": "-2100451"
+    },
+    "markout": {
+      "block": 10339991,
+      "mid": "2855184123",
+      "fill": "33552",
+      "afterHedge": "38555"
+    }
+  }
+]
