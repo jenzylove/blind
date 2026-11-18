@@ -12,7 +12,7 @@ import { seal, open as openEnvelope, sealKeysFromSeed, recipientOf } from "@qore
 import {
   account, artifact, evmWallet, pub, send, windowMsg, closeWindow, ensureRegistered, sleep, state,
   TOKENS, denom, CONVERT_COIN, ERC20_ABI, NET,
-} from "./chain.ts";
+} from "../src/chain.ts";
 
 const { abi, bytecode } = artifact("BlindSettlement");
 const FEE_CAP = 150_000_000_000n; // 150 gwei cap; base fee on testnet is 112.5 gwei
