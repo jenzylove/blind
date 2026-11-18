@@ -48,10 +48,22 @@ contract BlindSettlement {
         uint64 settleBlock;
         uint64 quoteExpiry;
         uint32 sealedCount;
-        uint128 bid;
-        uint128 ask;
+        uint128 bid;    // the maker's bid for a tiny net
+        uint128 ask;    // the maker's ask for a tiny net
+        uint128 bidMax; // its bid when it buys the full maxNet
+        uint128 askMax; // its ask when it sells the full maxNet
         uint128 maxNet; // largest net amount of base the market maker will buy or sell
         uint128 price;  // clearing price, set at settlement
+    }
+
+    /// The market maker's committed quote curve. The price moves in a straight line from
+    /// (bid, ask) at a tiny net to (bidMax, askMax) at maxNet.
+    struct Curve {
+        uint128 bid;
+        uint128 ask;
+        uint128 bidMax;
+        uint128 askMax;
+        uint128 maxNet;
     }
 
     uint64 public batchCount;
@@ -62,7 +74,7 @@ contract BlindSettlement {
 
     event Created(uint64 indexed batch, bytes32 keyHash);
     event Sealed(uint64 indexed batch, uint32 index, bytes envelope);
-    event Committed(uint64 indexed batch, uint128 bid, uint128 ask, uint128 maxNet, uint64 quoteExpiry);
+    event Committed(uint64 indexed batch, Curve curve, uint64 quoteExpiry);
     event Opened(uint64 indexed batch, bytes secretKey);
     event Filled(uint64 indexed batch, bytes32 indexed orderHash, address indexed user, bool buy, uint256 amountIn, uint256 amountOut);
     event Settled(uint64 indexed batch, uint256 price, uint256 quoteIn, uint256 baseIn, int256 makerBase, int256 makerQuote, uint256 orders);
@@ -115,10 +127,13 @@ contract BlindSettlement {
 
     // ---------------------------------------------------------------- messages (what keys sign)
 
-    function quoteMessage(uint64 batch, uint128 bid, uint128 ask, uint128 maxNet, uint64 quoteExpiry)
-        public view returns (bytes memory)
-    {
-        return abi.encode("blind-quote-v1", block.chainid, address(this), batch, bid, ask, maxNet, quoteExpiry);
+    function quoteMessage(uint64 batch, Curve memory c, uint64 quoteExpiry) public view returns (bytes memory) {
+        return abi.encode("blind-quote-v2", block.chainid, address(this), batch, c, quoteExpiry);
+    }
+
+    function curveOf(uint64 id) public view returns (Curve memory) {
+        Batch storage b = batches[id];
+        return Curve(b.bid, b.ask, b.bidMax, b.askMax, b.maxNet);
     }
 
     function orderHash(Order calldata o) public pure returns (bytes32) {
@@ -151,16 +166,23 @@ contract BlindSettlement {
         emit Sealed(id, b.sealedCount++, envelope);
     }
 
-    /// The market maker's price, fixed before any order can be read. Anyone may submit it;
+    /// The market maker's curve, fixed before any order can be read. Anyone may submit it;
     /// only the agent's ML-DSA-87 signature makes it valid. Closes intake.
-    function commit(uint64 id, uint128 bid, uint128 ask, uint128 maxNet, uint64 quoteExpiry, bytes calldata sig) external {
+    function commit(uint64 id, Curve calldata c, uint64 quoteExpiry, bytes calldata sig) external {
         Batch storage b = batches[id];
         if (b.keyHash == 0 || b.commitBlock != 0) revert BadPhase();
-        if (bid == 0 || bid >= ask || quoteExpiry <= block.number) revert BadQuote();
-        _verify(agent, sig, quoteMessage(id, bid, ask, maxNet, quoteExpiry));
-        (b.bid, b.ask, b.maxNet, b.quoteExpiry) = (bid, ask, maxNet, quoteExpiry);
+        if (c.bidMax == 0 || c.bidMax > c.bid || c.bid >= c.ask || c.ask > c.askMax || c.maxNet == 0 || quoteExpiry <= block.number) {
+            revert BadQuote();
+        }
+        _verify(agent, sig, quoteMessage(id, c, quoteExpiry));
+        b.bid = c.bid;
+        b.ask = c.ask;
+        b.bidMax = c.bidMax;
+        b.askMax = c.askMax;
+        b.maxNet = c.maxNet;
+        b.quoteExpiry = quoteExpiry;
         b.commitBlock = uint64(block.number);
-        emit Committed(id, bid, ask, maxNet, quoteExpiry);
+        emit Committed(id, c, quoteExpiry);
     }
 
     /// Reveal the batch key, strictly after the commit block. Anyone holding the key may call.
@@ -172,15 +194,44 @@ contract BlindSettlement {
         emit Opened(id, secretKey);
     }
 
-    /// The clearing price for given totals under a committed quote.
-    /// Net buying clears at the ask, net selling at the bid; if buys and sells cross
-    /// inside the band, they clear at the crossing price and the maker trades nothing.
-    function clearingPrice(uint256 bid, uint256 ask, uint256 quoteIn, uint256 baseIn) public pure returns (uint256) {
+    /// The clearing price for given totals under a committed curve.
+    /// Net buying: the maker sells n base and the price is ask + (askMax - ask) * n / maxNet.
+    /// Net selling: the maker buys n base and the price is bid - (bid - bidMax) * n / maxNet.
+    /// n itself depends on the price (buyers spend a fixed amount of quote), so the contract
+    /// solves the fixed point exactly: maxNet*P^2 - (P0*maxNet - D*B)*P - D*Q*S = 0, one positive root.
+    /// If buys and sells cross inside (bid, ask) they clear at the crossing price, maker trades nothing.
+    function clearingPrice(Curve memory c, uint256 quoteIn, uint256 baseIn) public pure returns (uint256) {
         if (quoteIn == 0 && baseIn == 0) return 0;
-        if (quoteIn * PRICE_SCALE / ask > baseIn) return ask;
-        if (quoteIn * PRICE_SCALE / bid < baseIn) return bid;
+        if (quoteIn * PRICE_SCALE / c.ask > baseIn) {
+            uint256 pa = _solve(c.ask, c.askMax - c.ask, c.maxNet, quoteIn, baseIn);
+            return pa < c.ask ? c.ask : (pa > c.askMax ? c.askMax : pa);
+        }
+        if (quoteIn * PRICE_SCALE / c.bid < baseIn) {
+            uint256 pb = _solve(c.bid, c.bid - c.bidMax, c.maxNet, quoteIn, baseIn);
+            return pb > c.bid ? c.bid : (pb < c.bidMax ? c.bidMax : pb);
+        }
         uint256 p = quoteIn * PRICE_SCALE / baseIn;
-        return p < bid ? bid : (p > ask ? ask : p);
+        return p < c.bid ? c.bid : (p > c.ask ? c.ask : p);
+    }
+
+    /// Positive root of m*P^2 - (p0*m - d*B)*P - d*Q*S = 0 (the same form on both sides).
+    function _solve(uint256 p0, uint256 d, uint256 m, uint256 q, uint256 b) internal pure returns (uint256) {
+        if (d == 0) return p0;
+        int256 lin = int256(p0 * m) - int256(d * b);
+        uint256 disc = uint256(lin * lin) + 4 * m * d * q * PRICE_SCALE;
+        int256 root = int256(_sqrt(disc));
+        int256 p = (lin + root) / int256(2 * m);
+        return p > 0 ? uint256(p) : 1;
+    }
+
+    function _sqrt(uint256 x) internal pure returns (uint256 z) {
+        if (x == 0) return 0;
+        z = x;
+        uint256 y = (x >> 1) + 1;
+        while (y < z) {
+            z = y;
+            y = (x / y + y) >> 1;
+        }
     }
 
     function settle(uint64 id, Order[] calldata orders, bytes[] calldata sigs) external nonReentrant {
@@ -193,7 +244,7 @@ contract BlindSettlement {
 
         Totals memory t;
         (t.quoteIn, t.baseIn) = _authenticate(id, orders, sigs);
-        t.price = clearingPrice(b.bid, b.ask, t.quoteIn, t.baseIn);
+        t.price = clearingPrice(curveOf(id), t.quoteIn, t.baseIn);
         b.price = uint128(t.price);
         (t.baseOut, t.quoteOut) = _execute(id, orders, t.price);
         _finish(id, b.maxNet, t, orders.length);

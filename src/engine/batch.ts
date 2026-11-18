@@ -57,7 +57,7 @@ export class Engine {
   }
 
   /** Run one batch. `intents` are the users' orders, signed and sealed before the agent quotes. */
-  async run(intents: Intent[], recentMids: bigint[], log: (s: string) => void = console.log) {
+  async run(intents: Intent[], extMoveBps: bigint, log: (s: string) => void = console.log) {
     const rec: any = { startedAt: new Date().toISOString(), dropped: [] as any[] };
 
     // 1. Create. The seed's hash is fixed on chain; the ML-KEM key pair is derived from the seed.
@@ -90,13 +90,14 @@ export class Engine {
     // 3. The agent quotes from public data only: pool reserves, its inventory, recent mids.
     const pool = await readPool();
     const inv = await makerInventory(this.settlement, this.hedger);
-    const q: Quote = makeQuote(pool, { base: inv.contract.base + inv.hedger.base, quote: inv.contract.quote + inv.hedger.quote }, recentMids);
+    const q: Quote = makeQuote(pool, { base: inv.contract.base + inv.hedger.base, quote: inv.contract.quote + inv.hedger.quote }, extMoveBps);
+    const curve = { bid: q.bid, ask: q.ask, bidMax: q.bidMax, askMax: q.askMax, maxNet: q.maxNet };
     const quoteExpiry = BigInt(Number(await pub.getBlockNumber()) + 300);
-    const qmsg = await this.read<Hex>("quoteMessage", [id, q.bid, q.ask, q.maxNet, quoteExpiry]);
+    const qmsg = await this.read<Hex>("quoteMessage", [id, curve, quoteExpiry]);
     const qsig = toHex(pqcSign(this.agent.pqc.secretKey, hexToBytes(qmsg)));
-    const cm = await this.tx("commit", [id, q.bid, q.ask, q.maxNet, quoteExpiry, qsig]);
+    const cm = await this.tx("commit", [id, curve, quoteExpiry, qsig]);
     rec.commit = { ...cm, ...strs(q), quoteExpiry: Number(quoteExpiry), inventory: strs({ cBase: inv.contract.base, cQuote: inv.contract.quote, hBase: inv.hedger.base, hQuote: inv.hedger.quote }) };
-    log(`batch ${id}: quote committed in block ${cm.block}: bid ${fmt(q.bid)} ask ${fmt(q.ask)} (mid ${fmt(q.mid)}) max ${Number(q.maxNet) / 1e18} fETH`);
+    log(`batch ${id}: curve committed in block ${cm.block}: bid ${fmt(q.bid)}..${fmt(q.bidMax)} ask ${fmt(q.ask)}..${fmt(q.askMax)} (mid ${fmt(q.mid)}) max ${Number(q.maxNet) / 1e18} fETH`);
 
     // 4. Reveal the seed strictly after the commit block.
     while (Number(await pub.getBlockNumber()) <= cm.block) await sleep(600);
@@ -114,7 +115,7 @@ export class Engine {
     for (;;) {
       const qi = orders.filter((x) => x.o.buy).reduce((a, x) => a + x.o.amountIn, 0n);
       const bi = orders.filter((x) => !x.o.buy).reduce((a, x) => a + x.o.amountIn, 0n);
-      const price = clearingPrice(q.bid, q.ask, qi, bi);
+      const price = clearingPrice(curve, qi, bi);
       const bad = orders.findIndex((x) => (x.o.buy ? (x.o.amountIn * SCALE) / price : (x.o.amountIn * price) / SCALE) < x.o.minOut);
       if (bad >= 0) { rec.dropped.push({ user: orders[bad].o.user, reason: "price outside the user's limit" }); orders.splice(bad, 1); continue; }
       const baseOut = orders.filter((x) => x.o.buy).reduce((a, x) => a + (x.o.amountIn * SCALE) / price, 0n);
@@ -151,6 +152,8 @@ export class Engine {
 
     // 8. Hedge the maker's net on x/amm from the separate hedging account.
     rec.hedge = await this.hedge(BigInt(ev.args.makerBase), log);
+    const after = await readPool();
+    rec.midAfterHedge = ((after.quote * SCALE) / after.base).toString();
     return rec;
   }
 

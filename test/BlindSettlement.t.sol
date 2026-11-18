@@ -99,9 +99,18 @@ contract BlindSettlementTest is Test {
         id = s.create(keccak256(abi.encodePacked(SK)));
     }
 
-    function _commit(uint64 id, uint128 maxNet) internal {
+    function _flat(uint128 maxNet) internal view returns (BlindSettlement.Curve memory) {
+        return BlindSettlement.Curve(bid, ask, bid, ask, maxNet);
+    }
+
+    function _commitCurve(uint64 id, BlindSettlement.Curve memory c) internal {
         uint64 exp = uint64(block.number + 50);
-        s.commit(id, bid, ask, maxNet, exp, _sign(agent, s.quoteMessage(id, bid, ask, maxNet, exp)));
+        bytes memory sig = _sign(agent, s.quoteMessage(id, c, exp));
+        s.commit(id, c, exp, sig);
+    }
+
+    function _commit(uint64 id, uint128 maxNet) internal {
+        _commitCurve(id, _flat(maxNet));
     }
 
     function _open(uint64 id) internal {
@@ -146,7 +155,7 @@ contract BlindSettlementTest is Test {
         os[2] = _order(carol, id, false, 1e18, 2_600e6);     // sells 1 fETH
         uint256 makerEth = fETH.balanceOf(address(s));
         _settle(id, os);
-        (,,,,,,,,, uint128 price) = s.batches(id);
+        (,,,,,,,,,,, uint128 price) = s.batches(id);
         assertEq(price, ask);
         assertEq(fETH.balanceOf(alice), 2e18);
         assertEq(fETH.balanceOf(bob), 1.5e18);
@@ -160,21 +169,21 @@ contract BlindSettlementTest is Test {
         os[0] = _order(alice, id, false, 1e18, 2_600e6);
         os[1] = _order(bob, id, true, 1_345e6, 0.4e18);
         _settle(id, os);
-        (,,,,,,,,, uint128 price) = s.batches(id);
+        (,,,,,,,,,,, uint128 price) = s.batches(id);
         assertEq(price, bid);
         assertEq(fUSD.balanceOf(alice), 10_000e6 + 2_690e6);
         assertEq(fETH.balanceOf(bob), 1.5e18);
     }
 
     function test_crossingInsideTheBandMakerTradesNothing() public {
-        uint64 id = _ready(0);
+        uint64 id = _ready(1); // the maker will absorb at most 1 wei of fETH
         BlindSettlement.Order[] memory os = new BlindSettlement.Order[](2);
         os[0] = _order(alice, id, true, 2_700e6, 0.99e18);  // 2,700 fUSD
         os[1] = _order(bob, id, false, 1e18, 2_600e6);      // 1 fETH
         uint256 eth0 = fETH.balanceOf(address(s));
         uint256 usd0 = fUSD.balanceOf(address(s));
-        _settle(id, os); // maxNet 0 still succeeds: users matched each other
-        (,,,,,,,,, uint128 price) = s.batches(id);
+        _settle(id, os); // still succeeds: users matched each other
+        (,,,,,,,,,,, uint128 price) = s.batches(id);
         assertEq(price, 2_700e6);
         assertEq(fETH.balanceOf(address(s)), eth0);
         assertEq(fUSD.balanceOf(address(s)), usd0);
@@ -182,9 +191,72 @@ contract BlindSettlementTest is Test {
 
     function testFuzz_priceAlwaysInsideTheCommittedBand(uint96 quoteIn, uint96 baseIn) public view {
         vm.assume(quoteIn > 0 || baseIn > 0);
-        uint256 p = s.clearingPrice(bid, ask, quoteIn, baseIn);
+        uint256 p = s.clearingPrice(_flat(1e18), quoteIn, baseIn);
         assertGe(p, bid);
         assertLe(p, ask);
+    }
+
+    // ------------------------------------------------------------ curve
+
+    // bid 2,690 / ask 2,710 at a tiny net, 2,600 / 2,800 at the full 0.5 fETH.
+    function _curve() internal view returns (BlindSettlement.Curve memory) {
+        return BlindSettlement.Curve(bid, ask, 2_600e6, 2_800e6, 0.5e18);
+    }
+
+    function _curveAt(BlindSettlement.Curve memory c, uint256 n, bool makerSells) internal pure returns (uint256) {
+        return makerSells ? c.ask + (uint256(c.askMax) - c.ask) * n / c.maxNet : c.bid - (uint256(c.bid) - c.bidMax) * n / c.maxNet;
+    }
+
+    function test_curve_smallNetPaysLittleMoreThanTheAsk() public {
+        uint64 id = _batch();
+        _commitCurve(id, _curve());
+        _open(id);
+        // Alice buys 0.1 fETH worth alone: price must sit on the curve at n of about 0.1, far below askMax.
+        BlindSettlement.Order memory o = _order(alice, id, true, 271e6, 0);
+        _settle(id, _one(o));
+        (,,,,,,,,,,, uint128 price) = s.batches(id);
+        uint256 n = uint256(271e6) * 1e18 / price;
+        uint256 onCurve = _curveAt(_curve(), n, true);
+        assertApproxEqRel(price, onCurve, 1e12, "price is the curve at its own net (within 1e-6)");
+        assertLt(price, 2_750e6);
+        assertGt(price, ask);
+    }
+
+    function test_curve_matchedFlowNeedsNoMakerAndPaysNoCurve() public {
+        uint64 id = _batch();
+        _commitCurve(id, _curve());
+        _open(id);
+        BlindSettlement.Order[] memory os = new BlindSettlement.Order[](2);
+        os[0] = _order(alice, id, true, 2_700e6, 0);
+        os[1] = _order(bob, id, false, 1e18, 0);
+        _settle(id, os);
+        (,,,,,,,,,,, uint128 price) = s.batches(id);
+        assertEq(price, 2_700e6);
+    }
+
+    function testFuzz_curve_priceIsTheFixedPoint(uint64 q, uint64 b) public view {
+        uint256 quoteIn = uint256(q) % 3_000e6;
+        uint256 baseIn = uint256(b) % 1.2e18;
+        vm.assume(quoteIn > 0 || baseIn > 0);
+        BlindSettlement.Curve memory c = _curve();
+        uint256 p = s.clearingPrice(c, quoteIn, baseIn);
+        assertGe(p, c.bidMax);
+        assertLe(p, c.askMax);
+        uint256 baseOut = quoteIn * 1e18 / p;
+        if (p > c.ask && p < c.askMax) {
+            assertApproxEqRel(p, _curveAt(c, baseOut - baseIn, true), 1e12);
+        } else if (p < c.bid && p > c.bidMax) {
+            assertApproxEqRel(p, _curveAt(c, baseIn - baseOut, false), 1e12);
+        }
+    }
+
+    function test_curve_badShapeRefused() public {
+        uint64 id = _batch();
+        uint64 exp = uint64(block.number + 50);
+        BlindSettlement.Curve memory c = BlindSettlement.Curve(bid, ask, bid + 1, ask, 1e18); // bidMax above bid
+        bytes memory sig = _sign(agent, s.quoteMessage(id, c, exp));
+        vm.expectRevert(BlindSettlement.BadQuote.selector);
+        s.commit(id, c, exp, sig);
     }
 
     // ------------------------------------------------------------ ordering
@@ -222,9 +294,9 @@ contract BlindSettlementTest is Test {
         uint64 id = _batch();
         _commit(id, 1e18);
         uint64 exp = uint64(block.number + 50);
-        bytes memory sig = _sign(agent, s.quoteMessage(id, bid, ask, 1e18, exp));
+        bytes memory sig = _sign(agent, s.quoteMessage(id, _flat(1e18), exp));
         vm.expectRevert(BlindSettlement.BadPhase.selector);
-        s.commit(id, bid, ask, 1e18, exp, sig);
+        s.commit(id, _flat(1e18), exp, sig);
     }
 
     function test_onlyTheSettlerCreatesAndSettles() public {
@@ -246,9 +318,10 @@ contract BlindSettlementTest is Test {
         uint64 id = _batch();
         uint64 exp = uint64(block.number + 50);
         // Settler signs a wildly wide quote with its own key: not the agent's, refused.
-        bytes memory sig = _sign(settler, s.quoteMessage(id, 1, type(uint128).max, type(uint128).max, exp));
+        BlindSettlement.Curve memory wide = BlindSettlement.Curve(1, 2, 1, type(uint128).max, type(uint128).max);
+        bytes memory sig = _sign(settler, s.quoteMessage(id, wide, exp));
         vm.expectRevert(BlindSettlement.BadSignature.selector);
-        s.commit(id, 1, type(uint128).max, type(uint128).max, exp, sig);
+        s.commit(id, wide, exp, sig);
     }
 
     function test_drill_forgedOrderRefused() public {

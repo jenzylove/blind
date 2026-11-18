@@ -33,6 +33,12 @@ async function window(acc: typeof op, maxTxs: bigint, gasEach: bigint, targets: 
 }
 
 async function deploy() {
+  const prev = state.read();
+  if (prev.settlement) {
+    // Keep the previous version's record: its batches stay checkable on chain.
+    const { v1, ...rest } = prev;
+    state.write({ v1: v1 ?? rest });
+  }
   await window(op, 1n, 3_000_000n, undefined, "operator window: 1 tx (deploy)");
   try {
     const hash = await evmWallet(op).deployContract({
@@ -41,8 +47,8 @@ async function deploy() {
     });
     const rc = await pub.waitForTransactionReceipt({ hash });
     console.log(`BlindSettlement ${rc.contractAddress} tx ${hash} status ${rc.status}`);
-    state.write({ chainId: 9800, settlement: rc.contractAddress, deployTx: hash, base: "fETH", quote: "fUSD",
-      agent: agent.evm, settler: op.evm, treasury: hedger.evm, settleWindowBlocks: 600 });
+    state.write({ chainId: 9800, version: 2, settlement: rc.contractAddress, deployTx: hash, base: "fETH", quote: "fUSD",
+      agent: agent.evm, settler: op.evm, treasury: hedger.evm, settleWindowBlocks: 600, firstBatch: undefined, stockTx: undefined });
   } finally { await sleep(2000); await closeWindow(op); }
 }
 
@@ -170,5 +176,25 @@ async function batch() {
   state.write({ firstBatch: run });
 }
 
+/** Move the old contract's inventory to the treasury: only the agent's ML-DSA-87 signature can. */
+async function withdrawV1() {
+  const old = state.read().v1.settlement as Hex;
+  const res: any[] = [];
+  await window(op, 2n, 320_000n, [old], "operator window: 2 txs, target = v1 contract only");
+  for (const t of [TOKENS.fETH.address, TOKENS.fUSD.address]) {
+    const bal = (await pub.readContract({ address: t, abi: ERC20_ABI, functionName: "balanceOf", args: [old] })) as bigint;
+    const n = (await pub.readContract({ address: old, abi, functionName: "withdrawNonce" })) as bigint;
+    const msg = (await pub.readContract({ address: old, abi, functionName: "withdrawMessage", args: [t, bal, n] })) as Hex;
+    const sig = toHex(pqcSign(agent.pqc.secretKey, hexToBytes(msg)));
+    const hash = await evmWallet(op).writeContract({ address: old, abi, functionName: "withdraw", args: [t, bal, sig], gas: 320_000n, ...fees });
+    const rc = await pub.waitForTransactionReceipt({ hash });
+    console.log(`v1 withdraw ${bal} of ${t} to treasury: ${hash} ${rc.status}`);
+    res.push({ token: t, amount: bal.toString(), hash, status: rc.status });
+  }
+  await closeWindow(op);
+  const v1 = state.read().v1;
+  state.write({ v1: { ...v1, withdrawnToTreasury: res } });
+}
+
 const cmd = process.argv[2];
-await ({ deploy, stock, onboard, batch } as Record<string, () => Promise<unknown>>)[cmd]();
+await ({ deploy, stock, onboard, batch, withdrawV1 } as Record<string, () => Promise<unknown>>)[cmd]();

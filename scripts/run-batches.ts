@@ -9,7 +9,7 @@ import { account, send, windowMsg, closeWindow, sleep, state, denom, CONVERT_COI
 import { Engine, readPool, type Intent } from "../src/engine/batch.ts";
 import { markout, SCALE } from "../src/agent/policy.ts";
 
-const OUT = "deployments/batches.json";
+const OUT = process.env.BATCHES ?? "deployments/batches-curve.json"; // v1 band runs: deployments/batches.json
 const load = (): any[] => (existsSync(OUT) ? JSON.parse(readFileSync(OUT, "utf8")) : []);
 const save = (rows: any[]) => writeFileSync(OUT, JSON.stringify(rows, null, 2) + "\n");
 
@@ -32,18 +32,24 @@ async function run(n: number) {
     `settler window: ${n * 6 + 4} txs, target = BlindSettlement only`);
   await sleep(4000);
   const engine = new Engine(settlement, op, agent, hedger);
-  const mids: bigint[] = [];
+  // Outside volatility: pool moves between our last hedge and the next batch (our own swaps excluded).
+  const ext: bigint[] = [];
+  let lastAfter: bigint | null = null;
   try {
     for (let i = 0; i < n; i++) {
       const p = await readPool();
-      mids.push((p.quote * SCALE) / p.base);
+      const now = (p.quote * SCALE) / p.base;
+      if (lastAfter) ext.push(((now > lastAfter ? now - lastAfter : lastAfter - now) * 10_000n) / lastAfter);
+      const extMove = ext.slice(-5).reduce((a, b) => (b > a ? b : a), 0n);
       const intents: Intent[] = [];
       if (Math.random() < 0.8) intents.push({ acc: u1, buy: true, amountIn: parseUnits(rand(1.5, 5).toFixed(6), 6), limitBps: 400n });
       if (Math.random() < 0.8) intents.push({ acc: u2, buy: false, amountIn: parseUnits(rand(0.0006, 0.0018).toFixed(8), 18), limitBps: 400n });
       if (!intents.length) intents.push({ acc: u1, buy: true, amountIn: parseUnits("2", 6), limitBps: 400n });
       try {
-        const rec = await engine.run(intents, mids.slice(-5));
+        const rec = await engine.run(intents, extMove);
+        rec.curveVersion = 2;
         rows.push(rec);
+        lastAfter = rec.midAfterHedge ? BigInt(rec.midAfterHedge) : null;
       } catch (e: any) {
         console.log(`batch attempt ${i + 1} failed: ${String(e.message).slice(0, 200)}`);
         rows.push({ failed: String(e.message).slice(0, 300), at: new Date().toISOString() });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpIn, cpOut, impactBps, makeQuote, maxNetSize, volBps, imbalanceBps, clearingPrice, markout, mid, DEFAULTS, SCALE, type Pool } from "../src/agent/policy.ts";
+import { cpIn, cpOut, impactBps, makeQuote, maxNetSize, volBps, clearingPrice, markout, mid, DEFAULTS, SCALE, type Pool } from "../src/agent/policy.ts";
 
 // Pool 3 as read on testnet, 18 Nov 2026.
 const pool: Pool = { base: 137_092_386_431_733_555n, quote: 390_091_036n, feeBps: 30n, maxImpactBps: 500n };
@@ -31,33 +31,53 @@ test("max size never exceeds the inventory share on either side", () => {
   assert.ok((n * mid(pool)) / SCALE <= (small.quote * DEFAULTS.inventoryShare) / 10_000n + 1n);
 });
 
-test("the band covers the hedge: ask above the pool's buy cost, bid below its sell proceeds", () => {
-  const q = makeQuote(pool, { base: 40_000_000_000_000_000n, quote: (40_000_000_000_000_000n * mid(pool)) / SCALE }, []);
-  assert.ok(q.ask > q.hedgeAsk && q.hedgeAsk > q.mid);
-  assert.ok(q.bid < q.hedgeBid && q.hedgeBid < q.mid);
+const curveOf = (q: { bid: bigint; ask: bigint; bidMax: bigint; askMax: bigint; maxNet: bigint }) => ({ bid: q.bid, ask: q.ask, bidMax: q.bidMax, askMax: q.askMax, maxNet: q.maxNet });
+const balanced = { base: 40_000_000_000_000_000n, quote: (40_000_000_000_000_000n * mid(pool)) / SCALE };
+
+test("the curve never undercuts the hedge at any net size", () => {
+  const q = makeQuote(pool, balanced, 0n);
+  for (let i = 1n; i <= 20n; i++) {
+    const n = (q.maxNet * i) / 20n;
+    const ask = q.ask + ((q.askMax - q.ask) * n) / q.maxNet;
+    const bid = q.bid - ((q.bid - q.bidMax) * n) / q.maxNet;
+    assert.ok(ask * n / SCALE >= cpIn(pool.quote, pool.base, n, 30n), `ask covers buying back ${n}`);
+    assert.ok(bid * n / SCALE <= cpOut(pool.base, pool.quote, n, 30n), `bid covers selling ${n}`);
+  }
 });
 
-test("volatility widens the band", () => {
-  const calm = makeQuote(pool, inv, [2_845_000_000n, 2_846_000_000n]);
-  const wild = makeQuote(pool, inv, [2_845_000_000n, 2_960_000_000n]);
+test("a small one-sided order pays about what x/amm charges, never far more", () => {
+  const q = makeQuote(pool, balanced, 0n);
+  const spend = 3_000_000n; // 3 fUSD
+  const p = clearingPrice(curveOf(q), spend, 0n);
+  const blindOut = (spend * SCALE) / p;
+  const ammOut = cpOut(pool.quote, pool.base, spend, 30n);
+  assert.ok(blindOut * 10_000n >= ammOut * (10_000n - 25n), `within 0.25% of x/amm: ${blindOut} vs ${ammOut}`);
+});
+
+test("matched flow clears inside the band, better than x/amm for both sides", () => {
+  const q = makeQuote(pool, balanced, 0n);
+  const p = clearingPrice(curveOf(q), 2_845_000n, 1_000_000_000_000_000n); // 2.845 fUSD against 0.001 fETH
+  assert.ok(p >= q.bid && p <= q.ask);
+});
+
+test("outside volatility widens the curve", () => {
+  const calm = makeQuote(pool, inv, 5n), wild = makeQuote(pool, inv, 200n);
   assert.ok(wild.ask - wild.bid > calm.ask - calm.bid);
   assert.equal(volBps([100n, 104n, 101n]), 400n);
 });
 
 test("inventory skew leans against the position", () => {
   const m = mid(pool);
-  const longBase = makeQuote(pool, { base: 60_000_000_000_000_000n, quote: (20_000_000_000_000_000n * m) / SCALE }, []);
-  const longQuote = makeQuote(pool, { base: 60_000_000_000_000_000n, quote: (100_000_000_000_000_000n * m) / SCALE }, []);
-  assert.ok(imbalanceBps({ base: 60_000_000_000_000_000n, quote: (20_000_000_000_000_000n * m) / SCALE }, m) > 0n);
-  // long base: cheaper ask to sell it off; long quote: higher bid to buy base
+  const longBase = makeQuote(pool, { base: 60_000_000_000_000_000n, quote: (20_000_000_000_000_000n * m) / SCALE }, 0n);
+  const longQuote = makeQuote(pool, { base: 60_000_000_000_000_000n, quote: (100_000_000_000_000_000n * m) / SCALE }, 0n);
   assert.ok(longBase.skewBps > 0n && longQuote.skewBps < 0n);
 });
 
-test("clearing rule matches the contract", () => {
-  const bid = 2_800_000_000n, ask = 2_900_000_000n;
-  assert.equal(clearingPrice(bid, ask, 2_900_000_000n, 0n), ask);
-  assert.equal(clearingPrice(bid, ask, 0n, SCALE), bid);
-  assert.equal(clearingPrice(bid, ask, 2_850_000_000n, SCALE), 2_850_000_000n);
+test("clearing rule: flat curve is the old band; crossing clears at the cross", () => {
+  const c = { bid: 2_800_000_000n, ask: 2_900_000_000n, bidMax: 2_800_000_000n, askMax: 2_900_000_000n, maxNet: SCALE };
+  assert.equal(clearingPrice(c, 2_900_000_000n, 0n), c.ask);
+  assert.equal(clearingPrice(c, 0n, SCALE), c.bid);
+  assert.equal(clearingPrice(c, 2_850_000_000n, SCALE), 2_850_000_000n);
 });
 
 test("markout: selling base at the ask then the price falls is a gain", () => {
