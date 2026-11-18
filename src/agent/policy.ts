@@ -17,7 +17,7 @@ export interface PolicyParams {
   inventoryShare: bigint;   // max share of either inventory side one batch may move, in bps
 }
 
-export const DEFAULTS: PolicyParams = { marginBps: 15n, volMultiplier: 100n, skewBps: 40n, hedgeImpactBps: 100n, inventoryShare: 4_000n };
+export const DEFAULTS: PolicyParams = { marginBps: 15n, volMultiplier: 100n, skewBps: 40n, hedgeImpactBps: 250n, inventoryShare: 4_000n };
 
 export const mid = (p: Pool) => (p.quote * SCALE) / p.base;
 
@@ -70,40 +70,64 @@ export function imbalanceBps(inv: Inventory, m: bigint): bigint {
 }
 
 export interface Quote {
-  bid: bigint; ask: bigint; maxNet: bigint; mid: bigint;
-  hedgeAsk: bigint; hedgeBid: bigint; // what hedging maxNet on x/amm would cost, per base unit
+  bid: bigint; ask: bigint; bidMax: bigint; askMax: bigint; maxNet: bigint; mid: bigint;
   marginBps: bigint; skewBps: bigint; volBps: bigint;
 }
 
 /**
- * The quote the agent commits before any order can be read.
- * ask covers buying maxNet back from x/amm; bid covers selling it there; both widened by the
- * margin and by recent volatility, then shifted against the inventory imbalance.
+ * The curve the agent commits before any order can be read.
+ * Each end is what hedging that size on x/amm would cost, per base unit: a tiny size for
+ * (bid, ask), the full maxNet for (bidMax, askMax). The hedge's average cost grows convexly
+ * with size, so the straight line between the ends never undercuts it. Both ends are widened
+ * by the margin plus recent outside volatility, then shifted against the inventory imbalance.
+ * `extMoveBps` is the largest recent pool move NOT caused by our own hedges.
  */
-export function makeQuote(pool: Pool, inv: Inventory, recentMids: bigint[], prm: PolicyParams = DEFAULTS): Quote {
+export function makeQuote(pool: Pool, inv: Inventory, extMoveBps: bigint, prm: PolicyParams = DEFAULTS): Quote {
   const m = mid(pool);
   const maxNet = maxNetSize(pool, inv, prm);
   if (maxNet === 0n) throw new Error("no size available: inventory empty or pool too thin");
-  // Cost to buy maxNet base from the pool (the maker's hedge after selling it), per unit.
-  const hedgeAsk = (cpIn(pool.quote, pool.base, maxNet, pool.feeBps) * SCALE) / maxNet;
-  // Proceeds from selling maxNet base into the pool (the hedge after buying it), per unit.
-  const hedgeBid = (cpOut(pool.base, pool.quote, maxNet, pool.feeBps) * SCALE) / maxNet;
-  const v = volBps(recentMids);
-  const margin = prm.marginBps + (v * prm.volMultiplier) / 100n;
-  const skew = (imbalanceBps(inv, m) * prm.skewBps) / BPS; // long base -> shade both down to sell it
-  const ask = (hedgeAsk * (BPS + margin - skew)) / BPS;
-  const bid = (hedgeBid * (BPS - margin - skew)) / BPS;
-  if (!(bid > 0n && bid < ask)) throw new Error("degenerate quote");
-  return { bid, ask, maxNet, mid: m, hedgeAsk, hedgeBid, marginBps: margin, skewBps: skew, volBps: v };
+  const tiny = maxNet / 1000n > 0n ? maxNet / 1000n : 1n;
+  const buyCost = (n: bigint) => (cpIn(pool.quote, pool.base, n, pool.feeBps) * SCALE) / n;     // maker sold n, buys it back
+  const sellGain = (n: bigint) => (cpOut(pool.base, pool.quote, n, pool.feeBps) * SCALE) / n;   // maker bought n, sells it
+  const margin = prm.marginBps + (extMoveBps * prm.volMultiplier) / 100n;
+  const skew = (imbalanceBps(inv, m) * prm.skewBps) / BPS; // long base -> shade down to sell it
+  const up = (x: bigint) => (x * (BPS + margin - skew)) / BPS;
+  const dn = (x: bigint) => (x * (BPS - margin - skew)) / BPS;
+  const q = { bid: dn(sellGain(tiny)), ask: up(buyCost(tiny)), bidMax: dn(sellGain(maxNet)), askMax: up(buyCost(maxNet)) };
+  if (!(q.bidMax > 0n && q.bidMax <= q.bid && q.bid < q.ask && q.ask <= q.askMax)) throw new Error("degenerate curve");
+  return { ...q, maxNet, mid: m, marginBps: margin, skewBps: skew, volBps: extMoveBps };
 }
 
-/** Same clearing rule as BlindSettlement.clearingPrice. */
-export function clearingPrice(bid: bigint, ask: bigint, quoteIn: bigint, baseIn: bigint): bigint {
+function isqrt(x: bigint): bigint {
+  if (x < 2n) return x;
+  let z = x, y = (x >> 1n) + 1n;
+  while (y < z) { z = y; y = (x / y + y) >> 1n; }
+  return z;
+}
+
+function solve(p0: bigint, d: bigint, m: bigint, q: bigint, b: bigint): bigint {
+  if (d === 0n) return p0;
+  const lin = p0 * m - d * b;
+  const root = isqrt(lin * lin + 4n * m * d * q * SCALE);
+  const p = (lin + root) / (2n * m);
+  return p > 0n ? p : 1n;
+}
+
+export interface Curve { bid: bigint; ask: bigint; bidMax: bigint; askMax: bigint; maxNet: bigint }
+
+/** Same rule as BlindSettlement.clearingPrice: the exact fixed point on the committed curve. */
+export function clearingPrice(c: Curve, quoteIn: bigint, baseIn: bigint): bigint {
   if (quoteIn === 0n && baseIn === 0n) return 0n;
-  if ((quoteIn * SCALE) / ask > baseIn) return ask;
-  if ((quoteIn * SCALE) / bid < baseIn) return bid;
+  if ((quoteIn * SCALE) / c.ask > baseIn) {
+    const p = solve(c.ask, c.askMax - c.ask, c.maxNet, quoteIn, baseIn);
+    return p < c.ask ? c.ask : p > c.askMax ? c.askMax : p;
+  }
+  if ((quoteIn * SCALE) / c.bid < baseIn) {
+    const p = solve(c.bid, c.bid - c.bidMax, c.maxNet, quoteIn, baseIn);
+    return p > c.bid ? c.bid : p < c.bidMax ? c.bidMax : p;
+  }
   const p = (quoteIn * SCALE) / baseIn;
-  return p < bid ? bid : p > ask ? ask : p;
+  return p < c.bid ? c.bid : p > c.ask ? c.ask : p;
 }
 
 /**
