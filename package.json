@@ -5,16 +5,19 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "drill": "tsx scripts/drill.ts"
+    "drill": "tsx scripts/drill.ts",
+    "server": "tsx server/index.ts",
+    "test": "tsx --test test/*.test.ts && forge test",
+    "build:web": "npm --prefix web run build"
   },
   "dependencies": {
     "@cosmjs/stargate": "^0.39.0",
-    "@qorechain/evm": "^0.13.0",
-    "@qorechain/qoreseal": "0.1.0",
-    "@qorechain/qoresign": "0.1.0",
-    "@qorechain/sdk": "0.14.0",
-    "solc": "0.8.28",
+    "@qorechain/evm": "^0.14.0",
+    "@qorechain/qoreseal": "^0.1.0",
+    "@qorechain/sdk": "^0.14.0",
     "tsx": "^4.19.0",
-    "viem": "^2.47.6"
+    "viem": "^2.58.0",
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0"
   }
 }
