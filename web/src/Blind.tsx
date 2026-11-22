@@ -13,7 +13,9 @@ let glOwner: object | null = null;
  * Falls back to a plain CSS panel when WebGL is missing, `flat` is set, or another blind already owns WebGL.
  * The renderer draws only while the slats move, and waits while the blind is off screen or the tab is hidden.
  */
-export default function Blind({ state, children, className = "", label, flat = false }: { state: BlindState; children: ReactNode; className?: string; label?: string; flat?: boolean }) {
+export default function Blind({ state, children, className = "", label, flat: flatProp = false }: { state: BlindState; children: ReactNode; className?: string; label?: string; flat?: boolean }) {
+  // ?gl=0 forces the CSS blind (to compare, and as an escape hatch on GPUs that stall).
+  const flat = flatProp || (typeof location !== "undefined" && new URLSearchParams(location.search).get("gl") === "0");
   const stage = useRef<HTMLDivElement>(null);
   const win = useRef<HTMLDivElement>(null);
   const target = useRef(state);
