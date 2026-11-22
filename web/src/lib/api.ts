@@ -58,7 +58,7 @@ export const api = {
   quote: (side: "buy" | "sell", amount: bigint) => j<Quote>(`/api/quote?side=${side}&amount=${amount}`),
   me: (evm: string) => j<{ fUSD: string; fETH: string; approved: { fUSD: boolean; fETH: boolean } }>(`/api/me/${evm}`),
   account: (addr: string) => j<{ accountNumber: string; sequence: string }>(`/api/cosmos/account/${addr}`),
-  pqc: (addr: string) => j<{ registered: boolean }>(`/api/cosmos/pqc/${addr}`),
+  pqc: (addr: string) => j<{ registered: boolean; possessionProven?: boolean }>(`/api/cosmos/pqc/${addr}`),
   window: (addr: string) => j<any>(`/api/cosmos/window/${addr}`),
   cosmosTx: (hash: string) => j<{ found: boolean; code?: number; height?: number; log?: string }>(`/api/cosmos/tx/${hash}`),
   broadcast: async (tx_bytes: string) => (await post("/api/cosmos/broadcast", { tx_bytes })).json() as Promise<{ hash?: string; code?: number; log?: string }>,

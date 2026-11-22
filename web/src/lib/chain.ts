@@ -105,14 +105,20 @@ export async function bankBalances(acc: UnifiedAccount, s: State) {
   return { fUSD: of(bankDenom(s.tokens.fUSD.address)), fETH: of(bankDenom(s.tokens.fETH.address)), qor: of("uqor") };
 }
 
-/** Sign and broadcast a public MsgSwapExactIn on pool 3. Returns as soon as the mempool has it. */
-export async function publicSwap(acc: UnifiedAccount, s: State, p: { buy: boolean; amountIn: bigint; minOut: bigint }) {
+export interface SwapParams { buy: boolean; amountIn: bigint; minOut: bigint }
+
+/** The public lane's message: a plain MsgSwapExactIn on pool 3. */
+export function swapMsg(sender: string, s: State, p: SwapParams) {
   const F = bankDenom(s.tokens.fUSD.address), E = bankDenom(s.tokens.fETH.address);
-  const msg = { typeUrl: "/qorechain.amm.v1.MsgSwapExactIn", value: {
-    sender: acc.cosmos, poolId: POOL_ID, tokenIn: { denom: p.buy ? F : E, amount: p.amountIn.toString() },
+  return { typeUrl: "/qorechain.amm.v1.MsgSwapExactIn", value: {
+    sender, poolId: POOL_ID, tokenIn: { denom: p.buy ? F : E, amount: p.amountIn.toString() },
     denomOut: p.buy ? E : F, minOut: p.minOut.toString(),
   } };
-  return signAndBroadcast(acc, "hybrid", [msg], { uqor: "50000", gas: "400000" });
+}
+
+/** Sign and broadcast a public MsgSwapExactIn on pool 3. Returns as soon as the mempool has it. */
+export async function publicSwap(acc: UnifiedAccount, s: State, p: SwapParams) {
+  return signAndBroadcast(acc, "hybrid", [swapMsg(acc.cosmos, s, p)], { uqor: "50000", gas: "400000" });
 }
 
 /** Wait for a public swap to land and read what the account received from its events. */
@@ -181,6 +187,35 @@ export async function approveBoth(acc: UnifiedAccount, s: State) {
   return out;
 }
 
+// ------------------------------------------------------------------ who trades
+export interface Order { user: Hex; batch: bigint; expiry: bigint; buy: boolean; amountIn: bigint; minOut: bigint; nonce: bigint }
+
+/**
+ * One account that can trade: the test account made in this browser, or a QoreX wallet.
+ * Only the order signer and the public lane's sender differ; sealing, posting and results are shared.
+ */
+export interface Trader {
+  kind: "burner" | "qorex";
+  evm: string;
+  cosmos: string;
+  /** The ML-DSA-87 signature BlindSettlement checks for this order. */
+  signOrder: (s: State, order: Order) => Promise<Uint8Array>;
+  /** Broadcast the public lane's swap. Resolves with the Cosmos tx hash. */
+  publicSwap: (s: State, p: SwapParams) => Promise<string>;
+}
+
+/** The browser test account: signs signedOrderBytes(order) with its own ML-DSA-87 key. */
+export function burnerTrader(acc: UnifiedAccount): Trader {
+  return {
+    kind: "burner", evm: acc.evm, cosmos: acc.cosmos,
+    signOrder: async (s, order) => {
+      const msg = (await pub.readContract({ address: s.contract as Hex, abi: abi as any, functionName: "signedOrderBytes", args: [order] })) as Hex;
+      return pqcSign(acc.pqc.secretKey, hexToBytes(msg));
+    },
+    publicSwap: (s, p) => publicSwap(acc, s, p),
+  };
+}
+
 // ------------------------------------------------------------------ orders
 export interface Built { envelope: Hex; bytes: number; order: { buy: boolean; amountIn: bigint; minOut: bigint; batch: bigint; expiry: bigint } }
 
@@ -188,16 +223,15 @@ export function minOutFor(buy: boolean, amountIn: bigint, mid: bigint, bps: bigi
   return buy ? (amountIn * SCALE * 10_000n) / (mid * (10_000n + bps)) : (amountIn * mid * (10_000n - bps)) / (SCALE * 10_000n);
 }
 
-export async function sealOrder(acc: UnifiedAccount, s: State, p: { buy: boolean; amountIn: bigint; bps: bigint; standing?: { blocks: bigint } }): Promise<Built> {
+export async function sealOrder(t: Trader, s: State, p: { buy: boolean; amountIn: bigint; bps: bigint; standing?: { blocks: bigint } }): Promise<Built> {
   const head = await pub.getBlockNumber();
   const mid = BigInt(s.pool.mid);
   const batch = p.standing ? 0n : BigInt(s.batch.id);
-  const order = {
-    user: acc.evm as Hex, batch, expiry: head + (p.standing ? p.standing.blocks : 400n), buy: p.buy,
+  const order: Order = {
+    user: t.evm as Hex, batch, expiry: head + (p.standing ? p.standing.blocks : 400n), buy: p.buy,
     amountIn: p.amountIn, minOut: minOutFor(p.buy, p.amountIn, mid, p.bps), nonce: BigInt(Date.now()),
   };
-  const msg = (await pub.readContract({ address: s.contract as Hex, abi: abi as any, functionName: "signedOrderBytes", args: [order] })) as Hex;
-  const sig = pqcSign(acc.pqc.secretKey, hexToBytes(msg));
+  const sig = await t.signOrder(s, order);
   const plaintext = hexToBytes(encodeAbiParameters(ORDER_T, [order, toHex(sig)]));
   const key = p.standing ? s.standingKey : s.batch.publicKey;
   if (!key) throw new Error("The batch key is not published yet. Try again in a moment.");
@@ -207,7 +241,7 @@ export async function sealOrder(acc: UnifiedAccount, s: State, p: { buy: boolean
 }
 
 /** Seal to the open batch and post. If intake just closed, reseal for the next batch and retry. */
-export async function placeSwap(acc: UnifiedAccount, p: { buy: boolean; amountIn: bigint; bps: bigint }, onSealed?: (b: Built) => void) {
+export async function placeSwap(acc: Trader, p: { buy: boolean; amountIn: bigint; bps: bigint }, onSealed?: (b: Built) => void) {
   for (let i = 0; i < 6; i++) {
     const s = await api.state();
     if (!s.batch.taking) { await sleep(2500); continue; }
@@ -221,7 +255,7 @@ export async function placeSwap(acc: UnifiedAccount, p: { buy: boolean; amountIn
   throw new Error("The batch kept closing before your order arrived. Try again.");
 }
 
-export async function placeLimit(acc: UnifiedAccount, p: { buy: boolean; amountIn: bigint; bps: bigint; blocks: bigint }, onSealed?: (b: Built) => void) {
+export async function placeLimit(acc: Trader, p: { buy: boolean; amountIn: bigint; bps: bigint; blocks: bigint }, onSealed?: (b: Built) => void) {
   for (let i = 0; i < 6; i++) {
     const s = await api.state();
     if (!s.batch.taking) { await sleep(2500); continue; }

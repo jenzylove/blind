@@ -3,8 +3,9 @@ import type { UnifiedAccount } from "@qorechain/sdk";
 import { api, batchPath, type Attempt, type BatchRec, type BotStats, type Quote, type State } from "../lib/api";
 import {
   loadAccount, newAccount, forgetAccount, storedWords, fund, registerKey, openWindow, approveBoth,
-  placeSwap, placeLimit, minOutFor, pub, publicSwap, publicSwapResult, bankDenom, type Built,
+  placeSwap, placeLimit, minOutFor, pub, publicSwapResult, bankDenom, burnerTrader, type Built, type Trader,
 } from "../lib/chain";
+import { qorex, connectQorex, approveFromQorex, qorexTrader, plainQorexError, FAUCET_URL, QOREX_INSTALL_URL, type QorexConn } from "../lib/qorex";
 import { usd, eth, short, blockNo, pct, edgeBps } from "../lib/fmt";
 import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled, Qc, StepQc } from "../ui";
 import { txUrl, STEP_TECH, viaLinkedKey, COMMIT_PLAIN } from "../lib/qore";
@@ -21,26 +22,36 @@ const SETUP_TEXT: Record<keyof Setup, [string, string]> = {
   approve: ["Approve the Blind contract", "Lets settlement move the tokens you sell. Two transactions."],
 };
 
-interface Me { fUSD: bigint; fETH: bigint; qor: bigint; bank: { fUSD: bigint; fETH: bigint }; approved: { fUSD: boolean; fETH: boolean }; registered: boolean }
+interface Me { fUSD: bigint; fETH: bigint; qor: bigint; bank: { fUSD: bigint; fETH: bigint }; approved: { fUSD: boolean; fETH: boolean }; registered: boolean; proven: boolean }
+type Who = { evm: string; cosmos: string };
 
 let tokensP: Promise<State["tokens"]> | null = null;
 const tokens = () => (tokensP ??= api.state().then((x) => x.tokens).catch((e) => { tokensP = null; throw e; }));
 
-async function readMe(acc: UnifiedAccount): Promise<Me> {
+async function readMe(acc: Who): Promise<Me> {
   const [m, p, b, tk] = await Promise.all([
     api.me(acc.evm),
-    api.pqc(acc.cosmos).catch(() => ({ registered: false })),
+    api.pqc(acc.cosmos).catch(() => ({ registered: false, possessionProven: false })),
     fetch(`/api/rest/cosmos/bank/v1beta1/balances/${acc.cosmos}`).then((r) => r.json()).catch(() => ({ balances: [] })),
     tokens(),
   ]);
   const of = (d: string) => BigInt((b.balances ?? []).find((x: any) => x.denom.toLowerCase() === d.toLowerCase())?.amount ?? "0");
   return {
     fUSD: BigInt(m.fUSD), fETH: BigInt(m.fETH), qor: of("uqor"), approved: m.approved, registered: p.registered,
+    proven: p.registered && p.possessionProven !== false,
     bank: { fUSD: of(bankDenom(tk.fUSD.address)), fETH: of(bankDenom(tk.fETH.address)) },
   };
 }
 
-interface Tracked { kind: "swap" | "limit"; batch: number; postHash: string; postBlock: number; bytes: number; buy: boolean; amountIn: string; minOut: string; expiry?: string; at: number; duel?: string }
+interface Tracked { kind: "swap" | "limit"; batch: number; postHash: string; postBlock: number; bytes: number; buy: boolean; amountIn: string; minOut: string; expiry?: string; at: number; duel?: string; who?: string }
+/** Orders saved before wallets existed carry no owner: they belong to the browser test account. */
+const ownedBy = (x: { who?: string }, t: Trader | null) => !!t && (x.who ? x.who === t.evm.toLowerCase() : t.kind === "burner");
+const MODE_KEY = "blind.mode.v1";
+type Mode = "burner" | "qorex";
+const OFF_KEY = "blind.qorex.off.v1";
+const walletOff = () => { try { return localStorage.getItem(OFF_KEY) === "1"; } catch { return false; } };
+const setWalletOff = (v: boolean) => { try { if (v) localStorage.setItem(OFF_KEY, "1"); else localStorage.removeItem(OFF_KEY); } catch { /* blocked */ } };
+const loadMode = (): Mode => { try { return localStorage.getItem(MODE_KEY) === "qorex" ? "qorex" : "burner"; } catch { return "burner"; } };
 const TRACK_KEY = "blind.orders.v1";
 const loadTracked = (): Tracked[] => { try { return JSON.parse(localStorage.getItem(TRACK_KEY) ?? "[]"); } catch { return []; } };
 const saveTracked = (t: Tracked[]) => { try { localStorage.setItem(TRACK_KEY, JSON.stringify(t.slice(0, 12))); } catch { /* blocked */ } };
@@ -59,11 +70,25 @@ export default function Trade() {
   const [tab, setTab] = useState<"both" | "swap" | "limit">("both");
   const [duel, setDuel] = useState<Duel | null>(loadDuel);
   const [restoring, setRestoring] = useState(() => !!storedWords());
+  const [mode, setModeS] = useState<Mode>(loadMode);
+  const [wallet, setWallet] = useState<QorexConn | null>(null);
+  const [walletMe, setWalletMe] = useState<Me | null>(null);
+  const [walletRestoring, setWalletRestoring] = useState(() => loadMode() === "qorex");
+  const setMode = (m: Mode) => { setModeS(m); try { localStorage.setItem(MODE_KEY, m); } catch { /* blocked */ } };
 
-  const refreshMe = useCallback(async (a = acc) => {
+  const burner = useMemo(() => (acc ? burnerTrader(acc) : null), [acc]);
+  const qx = useMemo(() => (wallet ? qorexTrader(wallet) : null), [wallet]);
+  const trader = mode === "qorex" ? qx : burner;
+
+  const refreshMe = useCallback(async (a: Who | null = acc) => {
     if (!a) return null;
     try { const m = await readMe(a); setMe(m); return m; } catch { return null; }
   }, [acc]);
+  const refreshWallet = useCallback(async (w: QorexConn | null = wallet) => {
+    if (!w) return null;
+    try { const m = await readMe(w); setWalletMe(m); return m; } catch { return null; }
+  }, [wallet]);
+  const refreshActive = () => (mode === "qorex" ? refreshWallet() : refreshMe());
 
   // Restore a saved test account and work out which setup steps are already done.
   useEffect(() => {
@@ -78,15 +103,36 @@ export default function Trade() {
       } finally { setRestoring(false); }
     })();
   }, []);
+  // Reconnect a QoreX account this site was already allowed to see, without a prompt.
   useEffect(() => {
-    if (!acc) return;
-    const t = setInterval(() => refreshMe(), 8000);
-    const vis = () => document.visibilityState === "visible" && refreshMe();
+    if (mode !== "qorex" || wallet) { setWalletRestoring(false); return; }
+    let on = true;
+    (async () => {
+      if (walletOff()) return;
+      for (let i = 0; i < 10 && !qorex(); i++) await new Promise((ok) => setTimeout(ok, 100));
+      try {
+        const w = qorex() ? await connectQorex(true) : null;
+        if (on && w) { setWallet(w); await refreshWallet(w); }
+      } catch { /* not connected yet: the connect step shows */ }
+      finally { if (on) setWalletRestoring(false); }
+    })();
+    return () => { on = false; };
+  }, [mode]);
+  useEffect(() => {
+    const live = mode === "qorex" ? wallet : acc;
+    if (!live) return;
+    const tick = () => (mode === "qorex" ? refreshWallet() : refreshMe());
+    const t = setInterval(tick, 8000);
+    const vis = () => document.visibilityState === "visible" && tick();
     document.addEventListener("visibilitychange", vis);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", vis); };
-  }, [acc, refreshMe]);
+  }, [mode, acc, wallet, refreshMe, refreshWallet]);
 
-  const ready = setup.approve === "done" && setup.key === "done";
+  const burnerReady = setup.approve === "done" && setup.key === "done";
+  const walletReady = !!walletMe && walletMe.approved.fUSD && walletMe.approved.fETH && walletMe.proven;
+  const ready = mode === "qorex" ? walletReady : burnerReady;
+  const activeMe = mode === "qorex" ? walletMe : me;
+  const need = mode === "qorex" ? "Connect QoreX first" : "Get a test account first";
 
   async function runSetup() {
     if (busy) return;
@@ -137,9 +183,12 @@ export default function Trade() {
   }
 
   function addTracked(t: Tracked) {
-    setTracked((xs) => { const n = [t, ...xs]; saveTracked(n); return n; });
+    const own = { ...t, who: trader?.evm.toLowerCase() };
+    setTracked((xs) => { const n = [own, ...xs]; saveTracked(n); return n; });
   }
-  const placed = (t: Tracked) => { addTracked(t); refreshMe(); };
+  const placed = (t: Tracked) => { addTracked(t); refreshActive(); };
+  const mine = tracked.filter((t) => ownedBy(t, trader));
+  const shownDuel = duel && ownedBy(duel, trader) ? duel : null;
 
   return (
     <div className="page wrap">
@@ -149,12 +198,23 @@ export default function Trade() {
       </div>
       <div className="tradegrid">
         <div className="tradeside">
-          <BatchBar s={s} down={down} now={now} tracked={tracked} />
+          <BatchBar s={s} down={down} now={now} tracked={mine} />
         </div>
         <div className="trademain">
-          <AccountPanel restoring={restoring} acc={acc} me={me} setup={setup} busy={busy} msg={setupMsg} err={setupErr} hashes={hashes}
-            onRun={runSetup} onRefresh={() => refreshMe()}
-            onReset={() => { forgetAccount(); setAcc(null); setMe(null); setHashes([]); setSetup({ keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" }); setTracked([]); saveTracked([]); setDuel(null); saveDuel(null); }} />
+          <div className="pick">
+            <div className="seg who" role="radiogroup" aria-label="How you trade">
+              <button role="radio" aria-checked={mode === "burner"} className={mode === "burner" ? "on" : ""} disabled={busy} onClick={() => setMode("burner")}>Make a test account in this browser</button>
+              <button role="radio" aria-checked={mode === "qorex"} className={mode === "qorex" ? "on" : ""} disabled={busy} onClick={() => setMode("qorex")}>Use my QoreX wallet</button>
+            </div>
+          </div>
+          {mode === "burner"
+            ? <AccountPanel restoring={restoring} acc={acc} me={me} setup={setup} busy={busy} msg={setupMsg} err={setupErr} hashes={hashes}
+                onRun={runSetup} onRefresh={() => refreshMe()}
+                onReset={() => { const keep = tracked.filter((t) => t.who && t.who !== acc?.evm.toLowerCase()); forgetAccount(); setAcc(null); setMe(null); setHashes([]); setSetup({ keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" }); setTracked(keep); saveTracked(keep); if (duel && ownedBy(duel, burner)) { setDuel(null); saveDuel(null); } }} />
+            : <QorexPanel restoring={walletRestoring} wallet={wallet} me={walletMe} s={s}
+                onConnected={(w) => { setWalletOff(false); setWallet(w); refreshWallet(w); }}
+                onRefresh={() => refreshWallet()}
+                onDisconnect={() => { setWalletOff(true); setWallet(null); setWalletMe(null); }} />}
           <div className={`stp ${ready ? "cur" : "later"}`}>
             <div className="stph"><span className="n">5</span><h3>Send a swap</h3></div>
             <div className="stpb">
@@ -164,14 +224,14 @@ export default function Trade() {
                 <button role="tab" aria-selected={tab === "limit"} className={tab === "limit" ? "on" : ""} onClick={() => setTab("limit")}>Limit order</button>
               </div>
               {tab === "both"
-                ? <BothBox s={s} acc={acc} me={me} ready={ready} onDuel={(d) => { setDuel(d); saveDuel(d); }} onPlaced={(t) => { addTracked(t); refreshMe(); }} />
+                ? <BothBox need={need} s={s} acc={trader} me={activeMe} ready={ready} onDuel={(d) => { const own = { ...d, who: trader?.evm.toLowerCase() }; setDuel(own); saveDuel(own); }} onPlaced={placed} />
                 : tab === "swap"
-                  ? <SwapBox s={s} acc={acc} me={me} ready={ready} onPlaced={placed} />
-                  : <LimitBox s={s} acc={acc} me={me} ready={ready} onPlaced={placed} />}
+                  ? <SwapBox need={need} s={s} acc={trader} me={activeMe} ready={ready} onPlaced={placed} />
+                  : <LimitBox need={need} s={s} acc={trader} me={activeMe} ready={ready} onPlaced={placed} />}
             </div>
           </div>
-          {acc && duel && <DuelView key={duel.id} d={duel} acc={acc} s={s} now={now} onSettled={() => refreshMe()} />}
-          <Orders tracked={tracked.filter((t) => !t.duel)} acc={acc} s={s} now={now} onSettled={() => refreshMe()} />
+          {trader && shownDuel && <DuelView key={shownDuel.id} d={shownDuel} acc={trader} s={s} now={now} onSettled={() => refreshActive()} />}
+          <Orders tracked={mine.filter((t) => !t.duel)} acc={trader} s={s} now={now} onSettled={() => refreshActive()} />
         </div>
       </div>
     </div>
@@ -301,6 +361,155 @@ function AccountPanel(p: { restoring: boolean; acc: UnifiedAccount | null; me: M
   );
 }
 
+// ------------------------------------------------------------------ QoreX wallet, as the same kind of stepper
+function QorexPanel(p: { restoring: boolean; wallet: QorexConn | null; me: Me | null; s: State | null; onConnected: (w: QorexConn) => void; onRefresh: () => Promise<Me | null> | void; onDisconnect: () => void }) {
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [hashes, setHashes] = useState<{ k: string; h: string }[]>([]);
+  const installed = !!qorex();
+  const { wallet: w, me } = p;
+  const funded = !!me && me.qor > 0n;
+  const approved = !!me && me.approved.fUSD && me.approved.fETH;
+  const proven = !!me && me.proven;
+  const states: StepState[] = [
+    w ? "done" : err && busy === "" && !w ? "err" : busy === "connect" ? "run" : "todo",
+    w && funded ? "done" : "todo",
+    approved ? "done" : busy === "approve" ? "run" : "todo",
+    proven ? "done" : "todo",
+  ];
+  const cur = states.findIndex((x) => x !== "done");
+
+  async function connect() {
+    setErr(""); setBusy("connect");
+    try { const c = await connectQorex(); if (c) p.onConnected(c); }
+    catch (e: any) { setErr(plainQorexError(e)); }
+    finally { setBusy(""); }
+  }
+  async function approve() {
+    if (!w) return;
+    setErr(""); setBusy("approve");
+    try {
+      const st = p.s ?? (await api.state());
+      await approveFromQorex(w, st, (k, h) => setHashes((x) => [...x, { k, h }]));
+      await p.onRefresh();
+    } catch (e: any) { setErr(plainQorexError(e)); }
+    finally { setBusy(""); }
+  }
+  async function getFunds() {
+    if (!w) return;
+    setErr(""); setBusy("fund");
+    try {
+      const r = await api.fund(w.cosmos, w.evm);
+      setHashes((x) => [...x, { k: "Test funds", h: r.hash }]);
+      for (let i = 0; i < 40; i++) { const t = await api.cosmosTx(r.hash).catch(() => null); if (t?.found) break; await new Promise((ok) => setTimeout(ok, 1500)); }
+      await p.onRefresh();
+    } catch (e: any) { setErr(String(e.message ?? e)); }
+    finally { setBusy(""); }
+  }
+  async function check() {
+    setErr(""); setBusy("check");
+    try { await p.onRefresh(); } finally { setBusy(""); }
+  }
+
+  const steps: { t: string; q: [string, string]; body: ReactNode; tx?: string }[] = [
+    {
+      t: "Connect QoreX",
+      q: ["QoreX", "Your QoreX wallet signs your order with your registered ML-DSA-87 key under QoreChain's message domain; the contract checks that signature on chain."],
+      body: !installed ? (
+        <>
+          <p>QoreX is not installed in this browser.</p>
+          <a className="btn day" href={QOREX_INSTALL_URL} target="_blank" rel="noreferrer">Get QoreX for Chrome</a>
+          <p className="dim small">After installing, reload this page. Or make a test account in this browser instead.</p>
+        </>
+      ) : (
+        <>
+          <p>Blind asks QoreX for your account on testnet. Use an Ethereum account (coin 60): its 0x and qor1 addresses are the same key, which settlement needs.</p>
+          <button className="btn day" onClick={connect} disabled={!!busy}>{busy === "connect" ? "Waiting for QoreX…" : err ? "Try again" : "Connect QoreX"}</button>
+        </>
+      ),
+    },
+    {
+      t: "Get test funds",
+      q: ["Blind faucet", "test QOR for fees, fUSD and fETH converted to ERC-20 with MsgConvertCoin, and bank coins for a public swap"],
+      body: (
+        <>
+          <p>One button sends your QoreX account test QOR for fees, plus Blind's test tokens: fUSD and fETH for sealed swaps and a little more for a public swap. Once a day per network.</p>
+          <div className="acctlinks">
+            <button className="btn day" onClick={getFunds} disabled={!!busy}>{busy === "fund" ? "Sending test funds…" : "Get test funds"}</button>
+            <a className="linkbtn" href={FAUCET_URL} target="_blank" rel="noreferrer">More QOR from the QoreChain faucet</a>
+            <button className="linkbtn" onClick={check} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check again"}</button>
+          </div>
+        </>
+      ),
+    },
+    {
+      t: "Approve the Blind contract",
+      q: ["Scoped EVM window", "QoreX opens a one transaction window to each token by itself, then sends the approval on QoreChain EVM"],
+      tx: "Approval fUSD",
+      body: (
+        <>
+          <p>Lets settlement move the tokens you sell, fUSD and fETH only. Two approvals in QoreX. If your post quantum key is not on chain yet, QoreX registers it with the first one.</p>
+          <button className="btn day" onClick={approve} disabled={!!busy}>{busy === "approve" ? "Approve in QoreX…" : err ? "Try again" : "Approve in QoreX"}</button>
+        </>
+      ),
+    },
+    {
+      t: "Your post quantum key on chain",
+      q: ["MsgRegisterPQCKeyV2", "QoreX registers your ML-DSA-87 key with proof of possession; the contract only accepts orders from a proven key"],
+      body: (
+        <>
+          <p>{me?.registered ? "Your key is on chain without proof of possession, so the contract would refuse your orders. Rotate the key in QoreX, then check again." : "QoreX registers your ML-DSA-87 key with your account's first transaction, and the approvals count. Once they land, check again."}</p>
+          <button className="btn day" onClick={check} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check again"}</button>
+        </>
+      ),
+    },
+  ];
+
+  if (p.restoring) return <div className="guide"><div className="stp cur"><div className="stph"><span className="n">1</span><h3>Connect QoreX</h3></div><div className="stpb"><div className="msg">Looking for your QoreX account.</div></div></div></div>;
+  const noTokens = !!me && me.fUSD === 0n && me.fETH === 0n && me.bank.fUSD === 0n && me.bank.fETH === 0n;
+  return (
+    <div className="guide">
+      {steps.map((g, i) => (
+        <div key={g.t} className={`stp ${states[i]} ${i === cur ? "cur" : ""}`}>
+          <div className="stph"><span className="n">{states[i] === "done" ? "✓" : i + 1}</span><h3>{g.t}</h3></div>
+          {(() => {
+            const h = g.tx ? hashes.find((x) => x.k === g.tx)?.h : undefined;
+            return <Qc name={g.q[0]} className="ind" href={h ? txUrl(h) : undefined} link={h ? "your transaction" : undefined}>{g.q[1]}</Qc>;
+          })()}
+          {i === cur && (
+            <div className="stpb">
+              {g.body}
+              {busy === "approve" && i === 2 && <div className="msg">Confirm each approval in the QoreX window. Each one waits for its block.</div>}
+              {err && <div className="msg err">{err}</div>}
+            </div>
+          )}
+        </div>
+      ))}
+      {w && (
+        <div className="acct">
+          <div className="acctrow">
+            <span className="dim">Your QoreX account</span>
+            <span className="mono">{short(w.evm, 8, 6)} <Copy text={w.evm} /></span>
+          </div>
+          <div className="bal">
+            <div><b>{me ? usd(me.fUSD) : "…"}</b><span>fUSD</span></div>
+            <div><b>{me ? eth(me.fETH, 5) : "…"}</b><span>fETH</span></div>
+            <div><b>{me ? (Number(me.qor) / 1e6).toFixed(3) : "…"}</b><span>QOR for fees</span></div>
+          </div>
+          {noTokens && <p className="small dim">No fUSD or fETH yet: use Get test funds above (once a day per network).</p>}
+          <div className="acctlinks">
+            <button className="linkbtn" onClick={check} disabled={!!busy}>Refresh</button>
+            <button className="linkbtn" onClick={p.onDisconnect}>Disconnect</button>
+          </div>
+          {hashes.length > 0 && (
+            <details className="raw"><summary>Setup transactions</summary><div className="rawrows">{hashes.map((x) => <div key={x.h}><span>{x.k}</span><TxLink h={x.h} /></div>)}</div></details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------ swap
 const toUnits = (v: string, dec: number) => {
   if (!/^\d*\.?\d*$/.test(v) || v === "" || v === ".") return 0n;
@@ -344,7 +553,7 @@ function OrderForm(p: { s: State | null; me: Me | null; buy: boolean; setBuy: (b
   );
 }
 
-function SwapBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: UnifiedAccount | null; me: Me | null; ready: boolean; onPlaced: (t: Tracked) => void }) {
+function SwapBox({ s, acc, me, ready, onPlaced, need }: { need: string; s: State | null; acc: Trader | null; me: Me | null; ready: boolean; onPlaced: (t: Tracked) => void }) {
   const [buy, setBuy] = useState(true);
   const [amt, setAmt] = useState("5");
   const [bps, setBps] = useState(400);
@@ -358,11 +567,11 @@ function SwapBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: Unifie
   const outFmt = (v: string | bigint) => (buy ? `${eth(v)} fETH` : `${usd(v)} fUSD`);
   const amm = q?.plainAmm ? BigInt(q.plainAmm) : null;
   const alone = q ? BigInt(q.blindIfAlone) : null;
-  const block = !acc ? "Get a test account first" : !ready ? "Finish setting up your account" : amount <= 0n ? "Enter an amount" : amount > bal ? `Not enough ${buy ? "fUSD" : "fETH"}` : q && !q.withinMakerSize ? "Too large for one batch. Try a smaller amount" : "";
+  const block = !acc ? need : !ready ? "Finish setting up your account" : amount <= 0n ? "Enter an amount" : amount > bal ? `Not enough ${buy ? "fUSD" : "fETH"}` : q && !q.withinMakerSize ? "Too large for one batch. Try a smaller amount" : "";
 
   async function go() {
     if (!acc || block) return;
-    setErr(""); setSealed(null); setBusy("Signing and sealing in your browser.");
+    setErr(""); setSealed(null); setBusy(acc.kind === "qorex" ? "Approve the order signature in QoreX. It is sealed in this browser after." : "Signing and sealing in your browser.");
     try {
       const r = await placeSwap(acc, { buy, amountIn: amount, bps: BigInt(bps) }, (b) => { setSealed(b); setBusy("Sealed. Posting it on chain."); });
       onPlaced({ kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now() });
@@ -388,7 +597,7 @@ function SwapBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: Unifie
   );
 }
 
-function LimitBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: UnifiedAccount | null; me: Me | null; ready: boolean; onPlaced: (t: Tracked) => void }) {
+function LimitBox({ s, acc, me, ready, onPlaced, need }: { need: string; s: State | null; acc: Trader | null; me: Me | null; ready: boolean; onPlaced: (t: Tracked) => void }) {
   const [buy, setBuy] = useState(true);
   const [amt, setAmt] = useState("5");
   const [bps, setBps] = useState(100);
@@ -399,10 +608,10 @@ function LimitBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: Unifi
   const bal = me ? (buy ? me.fUSD : me.fETH) : 0n;
   const minOut = s && amount > 0n ? minOutFor(buy, amount, BigInt(s.pool.mid), BigInt(bps)) : null;
   const outFmt = (v: bigint) => (buy ? `${eth(v)} fETH` : `${usd(v)} fUSD`);
-  const block = !acc ? "Get a test account first" : !ready ? "Finish setting up your account" : amount <= 0n ? "Enter an amount" : amount > bal ? `Not enough ${buy ? "fUSD" : "fETH"}` : "";
+  const block = !acc ? need : !ready ? "Finish setting up your account" : amount <= 0n ? "Enter an amount" : amount > bal ? `Not enough ${buy ? "fUSD" : "fETH"}` : "";
   async function go() {
     if (!acc || block) return;
-    setErr(""); setBusy("Signing and sealing to the standing key.");
+    setErr(""); setBusy(acc.kind === "qorex" ? "Approve the order signature in QoreX. It is sealed to the standing key after." : "Signing and sealing to the standing key.");
     try {
       const blocks = BigInt(hours * 2700);
       const head = await pub.getBlockNumber();
@@ -433,7 +642,7 @@ function LimitBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: Unifi
 }
 
 // ------------------------------------------------------------------ your orders
-function Orders({ tracked, acc, s, now, onSettled }: { tracked: Tracked[]; acc: UnifiedAccount | null; s: State | null; now: number; onSettled: () => void }) {
+function Orders({ tracked, acc, s, now, onSettled }: { tracked: Tracked[]; acc: Trader | null; s: State | null; now: number; onSettled: () => void }) {
   if (!acc || !tracked.length) return null;
   return (
     <div className="orders">
@@ -443,7 +652,7 @@ function Orders({ tracked, acc, s, now, onSettled }: { tracked: Tracked[]; acc: 
   );
 }
 
-function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: UnifiedAccount; s: State | null; now: number; onSettled: () => void; onRec?: (r: BatchRec) => void; lane?: boolean }) {
+function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Trader; s: State | null; now: number; onSettled: () => void; onRec?: (r: BatchRec) => void; lane?: boolean }) {
   const [rec, setRec] = useState<BatchRec | null>(null);
   const [limitFill, setLimitFill] = useState<{ rec: BatchRec; i: number } | null>(null);
   const me = acc.evm.toLowerCase();
@@ -489,7 +698,7 @@ function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Un
   const mine = rec?.fills?.findIndex((f) => f.user.toLowerCase() === me && f.amountIn === t.amountIn && !f.standing) ?? -1;
   const dropped = rec?.dropped?.find((d) => d.user.toLowerCase() === me);
   const items: { st: string; text: string; h?: string; on: boolean; done: boolean; q?: ReactNode }[] = [
-    { st: "Sealed", text: `${t.bytes.toLocaleString("en-US")} bytes, signed in this browser`, on: false, done: true, q: <StepQc i={0} /> },
+    { st: "Sealed", text: `${t.bytes.toLocaleString("en-US")} bytes, ${acc.kind === "qorex" ? "signed in QoreX, sealed in this browser" : "signed in this browser"}`, on: false, done: true, q: <StepQc i={0} /> },
     { st: "Posted", text: `Batch ${t.batch}, block ${blockNo(t.postBlock)}`, h: t.postHash, on: false, done: true, q: <StepQc i={1} /> },
     { st: "Price locked", text: rec?.commit ? `Market maker price locked in block ${blockNo(rec.commit.block)}` : "The market maker locks its price after intake closes", h: rec?.commit?.hash, on: step === 2 || step === 1, done: step > 2, q: rec?.commit && !viaLinkedKey(rec.commit.hash) ? <Qc name={COMMIT_PLAIN.name}>{COMMIT_PLAIN.rest}</Qc> : <StepQc i={2} href="/proof#agent" link="the rule" /> },
     { st: "Opened", text: rec?.open ? `Batch key revealed in block ${blockNo(rec.open.block)}` : "The batch key is revealed in a later block", h: rec?.open?.hash, on: step === 3, done: step > 3, q: <StepQc i={3} /> },
@@ -531,7 +740,7 @@ function Result({ f, rec, lead }: { f: NonNullable<BatchRec["fills"]>[number]; r
 // ------------------------------------------------------------------ one swap, two lanes
 interface Duel {
   id: string; at: number; buy: boolean; amountIn: string; slipBps: number; mid: string; quoteAmm: string; minOut: string;
-  publicHash?: string; publicErr?: string; blind?: Tracked; blindErr?: string;
+  publicHash?: string; publicErr?: string; blind?: Tracked; blindErr?: string; who?: string;
 }
 const DUEL_KEY = "blind.duel.v1";
 function loadDuel(): Duel | null { try { return JSON.parse(localStorage.getItem(DUEL_KEY) ?? "null"); } catch { return null; } }
@@ -539,7 +748,7 @@ function saveDuel(d: Duel | null) { try { if (d) localStorage.setItem(DUEL_KEY, 
 
 const SLIPS = [100, 300, 500];
 
-function BothBox({ s, acc, me, ready, onDuel, onPlaced }: { s: State | null; acc: UnifiedAccount | null; me: Me | null; ready: boolean; onDuel: (d: Duel) => void; onPlaced: (t: Tracked) => void }) {
+function BothBox({ s, acc, me, ready, onDuel, onPlaced, need }: { need: string; s: State | null; acc: Trader | null; me: Me | null; ready: boolean; onDuel: (d: Duel) => void; onPlaced: (t: Tracked) => void }) {
   const [buy, setBuy] = useState(true);
   const [amt, setAmt] = useState("5");
   const [slip, setSlip] = useState(300);
@@ -555,7 +764,7 @@ function BothBox({ s, acc, me, ready, onDuel, onPlaced }: { s: State | null; acc
   const pubBal = me ? (buy ? me.bank.fUSD : me.bank.fETH) : 0n;
   const sealBal = me ? (buy ? me.fUSD : me.fETH) : 0n;
   const noBank = !!me && me.bank.fUSD === 0n && me.bank.fETH === 0n;
-  const block = !acc ? "Get a test account first" : !ready ? "Finish setting up your account"
+  const block = !acc ? need : !ready ? "Finish setting up your account"
     : noBank ? "No coins for the public swap on this account"
     : amount <= 0n ? "Enter an amount"
     : amount > pubBal ? `Not enough ${unit} for the public swap`
@@ -577,7 +786,7 @@ function BothBox({ s, acc, me, ready, onDuel, onPlaced }: { s: State | null; acc
       onDuel(d);
       setBusy("Sending both at once.");
       // Fire both lanes in the same tick.
-      const pubP = publicSwap(acc, st, { buy, amountIn: amount, minOut })
+      const pubP = acc.publicSwap(st, { buy, amountIn: amount, minOut })
         .then((h) => { d = { ...d, publicHash: h }; onDuel(d); })
         .catch((e) => { d = { ...d, publicErr: e?.message ?? "The public swap was not sent." }; onDuel(d); });
       const blindP = placeSwap(acc, { buy, amountIn: amount, bps: 400n })
@@ -618,7 +827,7 @@ function BothBox({ s, acc, me, ready, onDuel, onPlaced }: { s: State | null; acc
       </div>
       <button className="btn day go" onClick={go} disabled={!!block || !!busy}>{busy ? "Sending…" : block || "Send it both ways"}</button>
       {busy && <div className="msg">{busy}</div>}
-      {noBank && <div className="msg small">This test account was made before the public lane existed. Use Sealed only, or start over with a new account tomorrow.</div>}
+      {noBank && <div className="msg small">{acc?.kind === "qorex" ? "Your QoreX account holds no fUSD or fETH coins for the public swap. Use Sealed only." : "This test account was made before the public lane existed. Use Sealed only, or start over with a new account tomorrow."}</div>}
       {err && <div className="msg err">{err}</div>}
     </div>
   );
@@ -631,7 +840,7 @@ function attemptDone(a: Attempt) {
   return !!(a.skipped || a.error || a.botPnl !== undefined || (a.order && !a.backHash && a.order !== "bot first"));
 }
 
-function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: UnifiedAccount; s: State | null; now: number; onSettled: () => void }) {
+function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: Trader; s: State | null; now: number; onSettled: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [res, setRes] = useState<{ height: number; got: bigint } | null>(null);
   const [pubErr, setPubErr] = useState("");
@@ -715,7 +924,7 @@ function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: UnifiedAccount;
           </div>
           <div className="dres res">
             {d.publicErr || pubErr ? <p className="neg">{d.publicErr || pubErr}</p>
-              : !d.publicHash ? <p>Signing your public swap.</p>
+              : !d.publicHash ? <p>{acc.kind === "qorex" ? "Approve the public swap in QoreX." : "Signing your public swap."}</p>
               : !res ? <p>In the public mempool, waiting for the next block. The bot can read every line above.</p>
               : <>
                 <div className="k">You got</div>
@@ -737,7 +946,7 @@ function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: UnifiedAccount;
         <div className="laneh"><b>Sealed swap on Blind</b><span>Behind the slats until the price is locked.</span></div>
         <Qc name="QoreSeal" className="lq">{STEP_TECH[0].rest}. Settled on QoreChain EVM, checked by pqcVerify 0x0A01</Qc>
         {d.blindErr ? <div className="msg err">{d.blindErr}</div>
-          : !d.blind ? <div className="msg">Sealing in your browser.</div>
+          : !d.blind ? <div className="msg">{acc.kind === "qorex" ? "Approve the order signature in QoreX, then it is sealed in this browser." : "Sealing in your browser."}</div>
           : <>
             {!blindRec && <p className="lanecap">Posted on chain as {d.blind.bytes.toLocaleString("en-US")} bytes of sealed data. No side, no amount. It opens when batch {d.blind.batch} settles, in about a minute.</p>}
             <OrderTrack t={d.blind} acc={acc} s={s} now={now} onSettled={onSettled} onRec={setBlindRec} lane />
