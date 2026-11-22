@@ -26,7 +26,7 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum AI Agen
    - It enforces each user's signed minimum and moves every leg at once.
    - The agent then hedges its net on x/amm from a separate account.
 
-When buyers and sellers meet in a batch, they trade with each other at one price, and both do better than a plain x/amm swap. Trading alone costs about what x/amm charges plus 0.15%. Every fill is shown next to the x/amm equivalent, misses included.
+When buyers and sellers meet in a batch, they trade with each other at one price. The lighter side gets a much better price than a plain x/amm swap, and the heavier side pays about what the market maker charges to take the rest (in the stress batch on 22 Nov: buyers +3.05%, sellers −0.50%). Trading alone costs about what x/amm charges plus 0.15%. Every fill is shown next to the x/amm equivalent, misses included.
 
 ## The agent's leash
 

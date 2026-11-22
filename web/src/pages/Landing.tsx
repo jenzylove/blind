@@ -268,7 +268,7 @@ function Limits() {
             <li><b>One service, two roles.</b> Today the operator and the market maker run as one service. So the promise that the market maker cannot price against your order rests on the operator not peeking.</li>
             <li><b>Limit orders.</b> They are sealed to a standing key the operator can read, so they can wait across batches.</li>
             <li><b>Including you.</b> The operator picks which posted orders go to settlement. Left out orders are listed with the reason, and anyone can open every order after the reveal.</li>
-            <li><b>Price when alone.</b> Trading alone you pay about what x/amm charges plus 0.15%. When buyers and sellers meet in a batch, both do better than x/amm.</li>
+            <li><b>Price when alone.</b> Trading alone you pay about what x/amm charges plus 0.15%. When buyers and sellers meet in a batch, the lighter side gets a much better price than x/amm and the heavier side pays about the market maker's price for the rest.</li>
             <li><b>Testnet.</b> fUSD, fETH and QOR here are test tokens with no value.</li>
           </ul>
         </div>

@@ -87,7 +87,7 @@ async function run() {
   for (let i = 0; i < 60; i++) {
     await sleep(5000);
     const b = (await (await fetch(`${SITE}/api/batch/${id}?v=3`)).json().catch(() => null)) as any;
-    if (b && (b.settled !== undefined || b.error)) {
+    if (b && b.batch && (b.settled !== undefined || b.error)) {
       console.log(`batch ${id}: settled ${b.settled}, opened ${b.opened}, fills ${b.fills?.length ?? 0}, price ${b.settle?.price}${b.error ? ", error " + b.error : ""}`);
       for (const d of b.dropped ?? []) console.log(`  left out: ${d.user.slice(0, 10)} ${d.reason}`);
       for (const f of b.fills ?? []) console.log(`  fill ${f.buy ? "buy " : "sell"} ${f.user.slice(0, 10)} out ${f.amountOut} vs x/amm ${f.plainAmm} (${((Number(f.amountOut) / Number(f.plainAmm) - 1) * 100).toFixed(2)}%)`);

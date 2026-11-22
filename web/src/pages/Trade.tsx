@@ -378,7 +378,7 @@ function SwapBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: Unifie
         <div className="r"><span>Blind, if nobody trades the other side</span><span className="mono">{alone !== null ? outFmt(alone) : "…"}</span></div>
         <div className="r"><span>x/amm right now, same input</span><span className="mono">{q ? (q.ammRefused ? "refuses this size" : amm !== null ? outFmt(amm) : "…") : "…"}</span></div>
         <div className="r"><span>The least you accept</span><span className="mono">{minOut !== null ? outFmt(minOut) : "…"}</span></div>
-        <div className="why">Trading alone costs about x/amm plus 0.15%. If someone takes the other side in your batch, you both do better than x/amm.</div>
+        <div className="why">Trading alone costs about x/amm plus 0.15%. If others take the other side in your batch, the lighter side gets a much better price than x/amm.</div>
       </div>
       <button className="btn day go" onClick={go} disabled={!!block || !!busy}>{busy ? "Sealing…" : block || "Seal and send"}</button>
       {busy && <div className="msg">{busy}</div>}
