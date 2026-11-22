@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UnifiedAccount } from "@qorechain/sdk";
-import { api, type Attempt, type BatchRec, type BotStats, type Quote, type State } from "../lib/api";
+import { api, batchPath, type Attempt, type BatchRec, type BotStats, type Quote, type State } from "../lib/api";
 import {
   loadAccount, newAccount, forgetAccount, storedWords, fund, registerKey, openWindow, approveBoth,
   placeSwap, placeLimit, minOutFor, pub, publicSwap, publicSwapResult, bankDenom, type Built,
@@ -523,7 +523,7 @@ function Result({ f, rec, lead }: { f: NonNullable<BatchRec["fills"]>[number]; r
         {e === null ? "x/amm would have refused this size (over its 5% impact cap)."
           : <>x/amm would have paid {amm} for the same input. <b className={e >= 0 ? "pos" : "neg"}>{e >= 0 ? `${pct(e)} better` : `${pct(e)} worse`}</b> with Blind.</>}
       </div>
-      <div className="foot2">Batch price {(Number(rec.settle!.price) / 1e6).toFixed(2)} fUSD per fETH. <TxLink h={rec.settle?.hash} label="Settlement" /> <Link to={`/batch/${rec.batch}`}>See the whole batch</Link></div>
+      <div className="foot2">Batch price {(Number(rec.settle!.price) / 1e6).toFixed(2)} fUSD per fETH. <TxLink h={rec.settle?.hash} label="Settlement" /> <Link to={batchPath(rec)}>See the whole batch</Link></div>
     </div>
   );
 }

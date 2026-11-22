@@ -119,8 +119,8 @@ export async function publicSwap(acc: UnifiedAccount, s: State, p: { buy: boolea
 export async function publicSwapResult(hash: string, who: string, denomOut: string) {
   for (let i = 0; i < 60; i++) {
     const r = await fetch(`/api/rest/cosmos/tx/v1beta1/txs/${hash}`);
-    if (r.ok) {
-      const t = (await r.json()).tx_response;
+    const t = r.ok ? (await r.json()).tx_response : null;
+    if (t) {
       if (t.code) throw new Error(plainSwapError(t.raw_log ?? ""));
       const got = (t.events ?? []).filter((e: any) => e.type === "coin_received").flatMap((e: any) => {
         const at = Object.fromEntries(e.attributes.map((x: any) => [x.key, x.value]));

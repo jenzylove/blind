@@ -14,7 +14,7 @@ export interface State {
 export interface Tx { hash: string; block: number; gas?: number; bytes?: number }
 export interface Fill { user: string; orderHash?: string; buy: boolean; amountIn: string; amountOut: string; plainAmm: string; standing?: boolean }
 export interface BatchRec {
-  batch: number; live?: boolean; startedAt?: string; endedAt?: string;
+  batch: number; version?: number; contract?: string; live?: boolean; startedAt?: string; endedAt?: string;
   create?: Tx; posts?: Tx[];
   commit?: Tx & { bid: string; ask: string; bidMax?: string; askMax?: string; maxNet: string; mid: string; marginBps?: string; skewBps?: string; volBps?: string; hedgeAsk?: string; hedgeBid?: string };
   open?: Tx; opened?: number;
@@ -25,7 +25,7 @@ export interface BatchRec {
   curveVersion?: number; error?: string;
 }
 export interface Batches {
-  live: BatchRec[]; testRuns: BatchRec[];
+  live: BatchRec[]; testRuns: BatchRec[]; earlier?: BatchRec[];
   versions: { current: { contract: string; version: number }; previous: { contract: string } | null };
 }
 export interface Quote { side: string; amountIn: string; mid: string; blindIfAlone: string; withinMakerSize: boolean; plainAmm: string | null; ammRefused: boolean }
@@ -54,7 +54,7 @@ export const api = {
     const r = await fetch(`/api/bot/attempt/${h}`);
     return r.ok ? r.json() : null;
   },
-  batch: (id: number) => j<BatchRec>(`/api/batch/${id}`),
+  batch: (id: number, v?: number) => j<BatchRec>(`/api/batch/${id}${v ? `?v=${v}` : ""}`),
   quote: (side: "buy" | "sell", amount: bigint) => j<Quote>(`/api/quote?side=${side}&amount=${amount}`),
   me: (evm: string) => j<{ fUSD: string; fETH: string; approved: { fUSD: boolean; fETH: boolean } }>(`/api/me/${evm}`),
   account: (addr: string) => j<{ accountNumber: string; sequence: string }>(`/api/cosmos/account/${addr}`),
@@ -90,3 +90,9 @@ export interface Attempt {
   skipped?: string; error?: string;
 }
 export interface BotStats { account: string; tried: number; hits: number; avgLossBps: number | null; recent: Attempt[] }
+
+/** The contract version the app trades on now. Each version numbers its batches from 1. */
+export const CURRENT_VERSION = 3;
+/** Link to a batch's page, naming the contract version when it is not the current one. */
+export const batchPath = (r: { batch: number; version?: number }) =>
+  `/batch/${r.batch}${r.version && r.version !== CURRENT_VERSION ? `?v=${r.version}` : ""}`;

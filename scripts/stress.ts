@@ -86,7 +86,7 @@ async function run() {
   console.log(`posted in ${Date.now() - t0} ms; waiting for batch ${id} to settle`);
   for (let i = 0; i < 60; i++) {
     await sleep(5000);
-    const b = (await (await fetch(`${SITE}/api/batch/${id}`)).json().catch(() => null)) as any;
+    const b = (await (await fetch(`${SITE}/api/batch/${id}?v=3`)).json().catch(() => null)) as any;
     if (b && (b.settled !== undefined || b.error)) {
       console.log(`batch ${id}: settled ${b.settled}, opened ${b.opened}, fills ${b.fills?.length ?? 0}, price ${b.settle?.price}${b.error ? ", error " + b.error : ""}`);
       for (const d of b.dropped ?? []) console.log(`  left out: ${d.user.slice(0, 10)} ${d.reason}`);
@@ -97,5 +97,20 @@ async function run() {
   console.log("batch did not finish in 5 minutes");
 }
 
+/** After a contract upgrade: open a window and approve the current contract for every saved trader. */
+async function reapprove() {
+  const accs = await Promise.all((JSON.parse(readFileSync(FILE, "utf8")) as string[]).map(traderOf));
+  for (const a of accs) {
+    await send(a, "hybrid", [windowMsg(a, { blocks: 600n, maxTxs: 2n, maxValueUqor: 60_000n, allowedTargets: [TOKENS.fUSD.address, TOKENS.fETH.address] })], `window ${a.cosmos.slice(0, 10)}`);
+    await sleep(3000);
+    for (const t of [TOKENS.fUSD.address, TOKENS.fETH.address]) {
+      const h = await evmWallet(a).writeContract({ address: t, abi: ERC20_ABI, functionName: "approve", args: [settlement, maxUint256], gas: 80_000n, ...FEES } as any);
+      await pub.waitForTransactionReceipt({ hash: h });
+    }
+  }
+  console.log(`approved ${settlement} for ${accs.length} traders`);
+}
+
 if (process.argv[2] === "setup") await setup(Number(process.argv[3] ?? 10));
+else if (process.argv[2] === "reapprove") await reapprove();
 else await run();

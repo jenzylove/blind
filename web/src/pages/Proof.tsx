@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type BatchRec } from "../lib/api";
+import { api, batchPath, CURRENT_VERSION, type BatchRec } from "../lib/api";
 import { price, blockNo, summarize, pct, inLabel, outLabel, usd, ago, type Summary } from "../lib/fmt";
 import { Edge, usePoll, navigate, Link, SlatGlyph, attemptIn, attemptOutcome, AttemptLinks, Qc } from "../ui";
 import { AGENT_SPIKE } from "../lib/qore";
@@ -13,7 +13,8 @@ export default function Proof() {
   const { v: ag } = usePoll(api.agent, 120000);
   const { v: bot, err: botErr } = usePoll(api.bot, 10000);
   const [filter, setFilter] = useState<"all" | "app" | "test">("all");
-  const live = b?.live ?? [];
+  // The current contract's app batches, then the previous version's app batches (read only).
+  const live = b ? [...b.live, ...(b.earlier ?? [])] : [];
   const test = b ? [...b.testRuns].reverse() : [];
   const rows = filter === "app" ? live : filter === "test" ? test : [...live, ...test];
   const cur = summarize([...live, ...test]);
@@ -97,8 +98,8 @@ export default function Proof() {
         <thead><tr><th>Batch</th><th>Who</th><th>Blocks: open, commit, reveal, settle</th><th>Committed curve</th><th>One price</th><th>Fills vs x/amm</th><th>Left out</th><th>Maker, 30 blocks later</th></tr></thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={`${r.live ? "l" : "t"}${r.batch}`} className="click" onClick={() => navigate(`/batch/${r.batch}`)}>
-              <td data-k="Batch"><span className="bcell"><SlatGlyph state={r.settled ? "open" : "closed"} /><span className="mono">{r.batch}</span></span></td>
+            <tr key={`${r.live ? "l" : "t"}${r.version ?? 2}-${r.batch}`} className="click" onClick={() => navigate(batchPath(r))}>
+              <td data-k="Batch"><span className="bcell"><SlatGlyph state={r.settled ? "open" : "closed"} /><span className="mono">{r.batch}</span>{(r.version ?? 2) !== CURRENT_VERSION && <span className="small dim"> v{r.version ?? 2}</span>}</span></td>
               <td data-k="Who">{r.live ? "app" : "test traders"}{r.live && <div className="small dim">{ago(r.endedAt)}</div>}</td>
               <td data-k="Blocks" className="mono small">{[r.create?.block, r.commit?.block, r.open?.block, r.settle?.block].filter(Boolean).map((x) => blockNo(x)).join(", ") || "none"}</td>
               <td data-k="Curve" className="mono small">{r.commit ? <>bid {price(r.commit.bid)}<br />ask {price(r.commit.ask)}</> : "not committed"}</td>

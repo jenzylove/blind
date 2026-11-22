@@ -1,4 +1,4 @@
-import { api } from "../lib/api";
+import { api, CURRENT_VERSION } from "../lib/api";
 import { price, blockNo, inLabel, outLabel, short, usd, eth } from "../lib/fmt";
 import { Edge, usePoll, TxLink, Link, Curve, Qc, StepQc } from "../ui";
 import type { ReactNode } from "react";
@@ -7,7 +7,8 @@ import Blind from "../Blind";
 import BatchPanel from "../BatchPanel";
 
 export default function BatchPage({ id }: { id: number }) {
-  const { v: r, err } = usePoll(() => api.batch(id), 15000, [id]);
+  const ver = Number(new URLSearchParams(location.search).get("v") ?? CURRENT_VERSION);
+  const { v: r, err } = usePoll(() => api.batch(id, ver === CURRENT_VERSION ? undefined : ver), 15000, [id, ver]);
   if (!r) return (
     <div className="page wrap">
       <div className="apphead"><h1>Batch {id}</h1></div>

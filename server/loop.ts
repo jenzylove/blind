@@ -107,8 +107,11 @@ export class BatchLoop {
   /** A user's sealed order for the current (or next) batch. Returns the post transaction. */
   async submit(envelope: Hex) {
     if (envelope.length > 2 + 2 * 8192) throw new Error("envelope too large");
+    // Accepted on arrival: an order that comes in while intake is open goes into this batch even if its
+    // on-chain post waits behind others in the queue. close() queues the commit behind it, so the post
+    // still lands before the price is committed.
+    if (this.phase !== "waiting" && this.phase !== "intake") throw new Error("intake closed; seal to the next batch key and retry");
     return this.serial(async () => {
-      if (this.phase !== "waiting" && this.phase !== "intake") throw new Error("intake closed; seal to the next batch key and retry");
       await this.ensureWindow();
       if (!this.current) {
         const { seed, publicKey } = this.next;

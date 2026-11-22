@@ -178,8 +178,9 @@ app.get("/api/batches/v1", (c) => c.json(V1));
 app.get("/api/batch/:id", (c) => {
   const id = Number(c.req.param("id"));
   const v = Number(c.req.query("v") ?? dep.version ?? 2);
-  const older = () => loop.earlier.find((x) => x.batch === id) ?? loop.history.find((x) => x.batch === id);
-  const r = v === (dep.version ?? 2) ? (loop.records.find((x) => x.batch === id) ?? (c.req.query("v") ? undefined : older())) : older();
+  // Each contract version numbers batches from 1: ?v=2 reads the previous version's batches.
+  const r = v === (dep.version ?? 2) ? loop.records.find((x) => x.batch === id)
+    : loop.earlier.find((x) => x.batch === id) ?? loop.history.find((x) => x.batch === id);
   return r ? c.json(r) : bad(c, "unknown batch", 404);
 });
 
@@ -222,6 +223,8 @@ app.get("/api/rest/*", async (c) => {
   if (!/^\/(cosmos|qorechain)\//.test(path)) return bad(c, "only /cosmos and /qorechain reads", 403);
   const url = new URL(c.req.url);
   const r = await fetch(`${NET.rest}${path}${url.search}`);
+  // A transaction that has not landed yet is "pending", not an error.
+  if (r.status === 404 && path.startsWith("/cosmos/tx/v1beta1/txs/")) return c.json({ pending: true });
   return new Response(await r.text(), { status: r.status, headers: { "content-type": "application/json" } });
 });
 

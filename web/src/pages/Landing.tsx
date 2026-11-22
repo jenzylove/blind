@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type BatchRec, type Batches, type BotStats } from "../lib/api";
+import { api, batchPath, type BatchRec, type Batches, type BotStats } from "../lib/api";
 import { short, blockNo, summarize, pct, inLabel, price, ago } from "../lib/fmt";
 import { Link, Edge, usePoll, useReveal, navigate, latestSettled, SlatGlyph, STEPS, attemptIn, attemptOut, AttemptLinks, StepQc, Qc, useLive } from "../ui";
 import { viaLinkedKey, COMMIT_PLAIN, txUrl, CONTRACT_URL, RELAY_SRC, LIMIT_SRC, QORESCAN_URL, QCAI_URL, STEP_TECH } from "../lib/qore";
@@ -62,7 +62,7 @@ function Hero({ rec }: { rec: BatchRec | null }) {
           <p className="sub">Your swap is sealed in your browser, so bots can't see it. The market maker locks its price on chain first. Then the blinds open, and everyone in the batch gets that same price.</p>
           <div className="ctas">
             <Link to="/app" className="btn day">Place a sealed swap</Link>
-            {rec && <Link to={`/batch/${rec.batch}`} className="btn line">Watch batch {rec.batch}</Link>}
+            {rec && <Link to={batchPath(rec)} className="btn line">Watch batch {rec.batch}</Link>}
           </div>
         </div>
         <div className="herowin" data-step={step}>
@@ -227,7 +227,7 @@ function ProofSec({ b }: { b: Batches | null }) {
         </div>
         <div className="rows">
           {all.filter((r) => r.settled).slice(0, 6).map((r) => (
-            <a key={`${r.live ? "l" : "t"}${r.batch}`} href={`/batch/${r.batch}`} className="brow" onClick={(e) => { e.preventDefault(); navigate(`/batch/${r.batch}`); }}>
+            <a key={`${r.live ? "l" : "t"}${r.version ?? 2}-${r.batch}`} href={batchPath(r)} className="brow" onClick={(e) => { e.preventDefault(); navigate(batchPath(r)); }}>
               <SlatGlyph state="open" />
               <span className="bn">Batch {r.batch}</span>
               <span className="who">{r.live ? "from the app" : "test traders (our accounts)"}</span>
