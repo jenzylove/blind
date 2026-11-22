@@ -1,7 +1,7 @@
 {
   "chainId": 9800,
-  "settlement": "0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf",
-  "deployTx": "0xb839386e8a88499e9d7ee5beb044b3b4c3a18295720b138510fba4b734647172",
+  "settlement": "0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e",
+  "deployTx": "0x9d80450bd3e236510032b4a744321bf07da44114bc5fab084c105b2047f403ad",
   "base": "fETH",
   "quote": "fUSD",
   "agent": "0x98b7426ea53F18Ad4FcC11B52a3B8d008C02308e",
@@ -82,6 +82,34 @@
       }
     ]
   },
-  "version": 2,
-  "stockTx": "BB131AE59AFFA191C2BF960F4C09FBD4B4D453FF5FD859C3BA15B4D764D232CD"
+  "version": 3,
+  "v2": {
+    "chainId": 9800,
+    "settlement": "0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf",
+    "deployTx": "0xb839386e8a88499e9d7ee5beb044b3b4c3a18295720b138510fba4b734647172",
+    "base": "fETH",
+    "quote": "fUSD",
+    "agent": "0x98b7426ea53F18Ad4FcC11B52a3B8d008C02308e",
+    "settler": "0xe203D8214722f17101ab85648ec900bb91fbe891",
+    "treasury": "0x95763489fF56D3ac6dBc34d1BF3c72ccb7487E4A",
+    "settleWindowBlocks": 600,
+    "version": 2,
+    "stockTx": "BB131AE59AFFA191C2BF960F4C09FBD4B4D453FF5FD859C3BA15B4D764D232CD",
+    "withdrawnToTreasury": [
+      {
+        "token": "0x02292293c13880a26242690eb70a0e42B8E91c28",
+        "amount": "43561270120197028",
+        "hash": "0x21a404b741430226447041e341337fe89d819637d1470ede9c44a903dd738288",
+        "status": "success"
+      },
+      {
+        "token": "0x97143B771D34ddb9130b807b135Ae675A5a963CA",
+        "amount": "122156852",
+        "hash": "0x7315959f443922021a210c50d5a34534cbf7744b6cb04bba3b60a351af1cf1fc",
+        "status": "success"
+      }
+    ]
+  },
+  "msgDomain": "qorechain-msg-v1|qorechain-diana|",
+  "stockTx": "751AA20B0BAABDDFC4ED958A3C9B200F1F009B80F19EB97C02CAF641B3660AD0"
 }

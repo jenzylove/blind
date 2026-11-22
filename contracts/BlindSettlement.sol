@@ -30,6 +30,10 @@ contract BlindSettlement {
     address public immutable settler;  // the only account that may create and settle batches
     address public immutable treasury; // inventory can leave only to this address
     uint64 public immutable settleWindow; // blocks after open in which a batch may settle
+    /// QoreChain's message-signing domain, "qorechain-msg-v1|<chain id>|". Users sign their order under it,
+    /// the same form QoreX's signArbitrary and QoreSign's messagePqSignBytes produce, so a wallet and a
+    /// browser key sign identical bytes and an order signature can never pass as a transaction signature.
+    bytes public msgDomain;
 
     struct Order {
         address user;
@@ -89,6 +93,7 @@ contract BlindSettlement {
     error MinOut(uint256 index);
     error TooBig();
     error TransferFailed();
+    error BadToken();
 
     modifier nonReentrant() {
         require(locked == 1);
@@ -97,7 +102,9 @@ contract BlindSettlement {
         locked = 1;
     }
 
-    constructor(IERC20 base_, IERC20 quote_, address agent_, address settler_, address treasury_, uint64 settleWindow_) {
+    constructor(IERC20 base_, IERC20 quote_, address agent_, address settler_, address treasury_, uint64 settleWindow_, string memory chainName_) {
+        if (address(base_).code.length == 0 || address(quote_).code.length == 0 || address(base_) == address(quote_)) revert BadToken();
+        msgDomain = bytes.concat("qorechain-msg-v1|", bytes(chainName_), "|");
         base = base_;
         quote = quote_;
         agent = agent_;
@@ -142,6 +149,11 @@ contract BlindSettlement {
 
     function orderMessage(Order calldata o) public view returns (bytes memory) {
         return abi.encode("blind-order-v1", block.chainid, address(this), o);
+    }
+
+    /// The exact bytes a user's ML-DSA-87 key signs: QoreChain's message domain, then the order.
+    function signedOrderBytes(Order calldata o) public view returns (bytes memory) {
+        return bytes.concat(msgDomain, orderMessage(o));
     }
 
     function withdrawMessage(address token, uint256 amount, uint256 nonce) public view returns (bytes memory) {
@@ -267,7 +279,7 @@ contract BlindSettlement {
             bytes32 h = orderHash(o);
             if (used[h] || o.amountIn == 0 || block.number > o.expiry || (o.batch != 0 && o.batch != id)) revert BadOrder(i);
             used[h] = true;
-            _verify(o.user, sigs[i], orderMessage(o));
+            _verify(o.user, sigs[i], signedOrderBytes(o));
             if (o.buy) quoteIn += o.amountIn;
             else baseIn += o.amountIn;
         }
@@ -302,6 +314,7 @@ contract BlindSettlement {
 
     /// Inventory leaves only to the treasury, and only with the agent's ML-DSA-87 signature.
     function withdraw(address token, uint256 amount, bytes calldata sig) external nonReentrant {
+        if (token != address(base) && token != address(quote)) revert BadToken();
         uint256 n = withdrawNonce;
         _verify(agent, sig, withdrawMessage(token, amount, n));
         withdrawNonce = n + 1;
@@ -310,11 +323,13 @@ contract BlindSettlement {
     }
 
     function _pull(IERC20 t, address from, uint256 amount) internal {
+        if (address(t).code.length == 0) revert TransferFailed(); // a call to an address with no code would "succeed"
         (bool ok, bytes memory ret) = address(t).call(abi.encodeCall(IERC20.transferFrom, (from, address(this), amount)));
         if (!ok || (ret.length > 0 && !abi.decode(ret, (bool)))) revert TransferFailed();
     }
 
     function _pay(IERC20 t, address to, uint256 amount) internal {
+        if (address(t).code.length == 0) revert TransferFailed();
         (bool ok, bytes memory ret) = address(t).call(abi.encodeCall(IERC20.transfer, (to, amount)));
         if (!ok || (ret.length > 0 && !abi.decode(ret, (bool)))) revert TransferFailed();
     }

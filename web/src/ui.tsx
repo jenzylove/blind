@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type
 import { api, type State, type Phase, type Fill, type BatchRec, type Attempt } from "./lib/api";
 import { short, pct, edgeBps, price, blockNo, eth, usd } from "./lib/fmt";
 import { EXPLORER } from "./lib/const";
+import { REPO, KITS, txUrl, STEP_TECH } from "./lib/qore";
 import type { BlindState } from "./Blind";
 
-export const REPO = "https://github.com/jenzylove/blind";
+export { REPO };
 
 // ------------------------------------------------------------------ routing
 const listeners = new Set<() => void>();
@@ -140,7 +141,24 @@ export function Edge({ f }: { f: Fill }) {
 
 export function TxLink({ h, label }: { h?: string; label?: string }) {
   if (!h) return null;
-  return <a href={`${EXPLORER}/tx/${h.startsWith("0x") ? h : h.toUpperCase()}`} target="_blank" rel="noreferrer" className="txl">{label ?? short(h, 6, 4)} <span aria-hidden>↗</span></a>;
+  return <a href={txUrl(h)} target="_blank" rel="noreferrer" className="txl">{label ?? short(h, 6, 4)} <span aria-hidden>↗</span></a>;
+}
+
+/** A quiet mono line naming the QoreChain technology doing a piece of work, with live evidence when there is some. */
+export function Qc({ name, children, href, link, className }: { name: string; children?: ReactNode; href?: string; link?: string; className?: string }) {
+  const ext = href && !href.startsWith("/proof") && !href.startsWith("/#");
+  return (
+    <div className={`qc ${className ?? ""}`}>
+      <b>{name}</b>{children ? <>: {children}</> : null}
+      {href && <> {ext ? <a href={href} target="_blank" rel="noreferrer">{link ?? "proof"} <span aria-hidden>↗</span></a> : <Link to={href}>{link ?? "proof"}</Link>}</>}
+    </div>
+  );
+}
+
+/** The step's QoreChain line, from STEP_TECH. */
+export function StepQc({ i, href, link, children }: { i: number; href?: string; link?: string; children?: ReactNode }) {
+  const t = STEP_TECH[i];
+  return <Qc name={t.name} href={href} link={link}>{children ?? t.rest}</Qc>;
 }
 
 export function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
@@ -228,6 +246,7 @@ function Footer() {
             <Link to="/app">Place a sealed swap</Link>
             <Link to="/proof">Every batch</Link>
             <Link to="/#how">How a batch works</Link>
+            <Link to="/#qorechain">Built on QoreChain</Link>
             <Link to="/#faq">Questions</Link>
           </div>
           <div>
@@ -241,7 +260,10 @@ function Footer() {
             <a href="https://explore.qore.network" target="_blank" rel="noreferrer">QoreChain explorer</a> <span className="dim small">(switch it to Testnet, top right)</span>
           </div>
         </div>
-        <div className="base"><span>QoreChain testnet, chain qorechain-diana</span><span>MIT licence</span></div>
+        <div className="base">
+          <span>Built on QoreChain testnet (qorechain-diana)</span>
+          <span className="kits">{KITS.map((k) => <a key={k} href={`https://www.npmjs.com/package/${k}`} target="_blank" rel="noreferrer">{k}</a>)}</span>
+        </div>
       </div>
     </footer>
   );

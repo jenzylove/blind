@@ -89,7 +89,7 @@ contract BlindSettlementTest is Test {
 
         fETH = new Token("fETH");
         fUSD = new Token("fUSD");
-        s = new BlindSettlement(IERC20(address(fETH)), IERC20(address(fUSD)), agent, settler, treasury, 100);
+        s = new BlindSettlement(IERC20(address(fETH)), IERC20(address(fUSD)), agent, settler, treasury, 100, "qorechain-diana");
         // price = fUSD base units per fETH base unit x 1e18: 2,700 fUSD per fETH = 2700e6 * 1e18 / 1e18
         bid = uint128(uint256(2_690e6) * 1e18 / 1e18);
         ask = uint128(uint256(2_710e6) * 1e18 / 1e18);
@@ -145,9 +145,10 @@ contract BlindSettlementTest is Test {
     }
 
     function _sigOf(BlindSettlement.Order memory o) internal view returns (bytes memory) {
-        return _sign(o.user, this.orderMessageOf(o));
+        return _sign(o.user, this.signedOrderBytesOf(o));
     }
     function orderMessageOf(BlindSettlement.Order calldata o) external view returns (bytes memory) { return s.orderMessage(o); }
+    function signedOrderBytesOf(BlindSettlement.Order calldata o) external view returns (bytes memory) { return s.signedOrderBytes(o); }
 
     function _settle(uint64 id, BlindSettlement.Order[] memory os) internal {
         bytes[] memory sigs = new bytes[](os.length);
@@ -343,7 +344,7 @@ contract BlindSettlementTest is Test {
         uint64 id = _ready(1e18);
         BlindSettlement.Order[] memory os = _one(_order(alice, id, true, 10_000e6, 0));
         bytes[] memory sigs = new bytes[](1);
-        sigs[0] = _sign(settler, this.orderMessageOf(os[0])); // settler signs for alice
+        sigs[0] = _sign(settler, this.signedOrderBytesOf(os[0])); // settler signs for alice
         vm.prank(settler);
         vm.expectRevert(BlindSettlement.BadSignature.selector);
         s.settle(id, os, sigs);
@@ -488,7 +489,7 @@ contract BlindSettlementTest is Test {
     /// QCAI #1: a token that re-enters during settle's payout cannot withdraw inventory.
     function test_qcai_reentryDuringSettleIsBlocked() public {
         EvilToken evil = new EvilToken();
-        BlindSettlement s2 = new BlindSettlement(IERC20(address(evil)), IERC20(address(fUSD)), agent, settler, treasury, 100);
+        BlindSettlement s2 = new BlindSettlement(IERC20(address(evil)), IERC20(address(fUSD)), agent, settler, treasury, 100, "qorechain-diana");
         evil.mint(address(s2), 1e18);
         vm.prank(alice);
         fUSD.approve(address(s2), type(uint256).max);
@@ -505,7 +506,7 @@ contract BlindSettlementTest is Test {
         s2.open(id, abi.encodePacked(SK));
         BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
         bytes[] memory sigs = new bytes[](1);
-        sigs[0] = _sign(alice, s2.orderMessage(o));
+        sigs[0] = _sign(alice, s2.signedOrderBytes(o));
         vm.prank(settler);
         s2.settle(id, _one(o), sigs);
 
@@ -541,5 +542,37 @@ contract BlindSettlementTest is Test {
         vm.prank(settler);
         vm.expectRevert(BlindSettlement.TooBig.selector);
         s.settle(id, os, sigs);
+    }
+
+    // ------------------------------------------------------------ v3: wallet signing domain and token checks
+
+    /// Users sign under QoreChain's message domain, the form QoreX's signArbitrary produces.
+    function test_v3_msgDomainIsQoreChainsMessageDomain() public view {
+        assertEq(s.msgDomain(), bytes("qorechain-msg-v1|qorechain-diana|"));
+    }
+
+    /// A signature over the bare order (no domain) is refused: the domain is part of what is signed.
+    function test_v3_signatureWithoutTheDomainRefused() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sign(alice, this.orderMessageOf(o));
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.settle(id, _one(o), sigs);
+    }
+
+    /// Inventory can be withdrawn only in the two trading tokens.
+    function test_v3_withdrawOnlyTheTradingTokens() public {
+        address other = address(new Token("OTHER"));
+        bytes memory sig = _sign(agent, s.withdrawMessage(other, 1, 0));
+        vm.expectRevert(BlindSettlement.BadToken.selector);
+        s.withdraw(other, 1, sig);
+    }
+
+    /// The contract cannot be deployed against an address with no code (QCAI #4).
+    function test_v3_tokensMustBeContracts() public {
+        vm.expectRevert(BlindSettlement.BadToken.selector);
+        new BlindSettlement(IERC20(makeAddr("not a token")), IERC20(address(fUSD)), agent, settler, treasury, 100, "qorechain-diana");
     }
 }

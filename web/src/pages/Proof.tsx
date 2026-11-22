@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { api, type BatchRec } from "../lib/api";
 import { price, blockNo, summarize, pct, inLabel, outLabel, usd, ago, type Summary } from "../lib/fmt";
-import { Edge, usePoll, navigate, Link, SlatGlyph, attemptIn, attemptOutcome, AttemptLinks } from "../ui";
+import { Edge, usePoll, navigate, Link, SlatGlyph, attemptIn, attemptOutcome, AttemptLinks, Qc } from "../ui";
+import { AGENT_SPIKE } from "../lib/qore";
 
 // Function selectors of BlindSettlement, to show the rule in words.
 const SELECTORS: Record<string, string> = { "0x7368a8ce": "create", "0x5f274211": "post", "0x6225710f": "commit", "0x95329838": "open", "0x75f97094": "settle" };
@@ -60,7 +61,7 @@ export default function Proof() {
         {bot && <p className="small dim">Bot account <span className="mono">{bot.account}</span></p>}
       </section>
 
-      <section className="vfix">
+      <section className="vfix" id="agent">
         <h2>The agent's leash, read from the chain</h2>
         <p>The market maker agent does not hold the operator's key. It commits its price with its own key, linked to the operator account with a spending rule that QoreChain enforces on every call. Anything outside the rule is refused by the chain, not by our code. Posting, revealing and settling stay with the operator, so every order and fill remains a public event anyone can check.</p>
         {ag ? (
@@ -75,6 +76,7 @@ export default function Proof() {
             {ag.key && <div className="vrow kv"><span>Key expires</span><b>{new Date(Number(ag.key.expiryUnix) * 1000).toISOString().slice(0, 10)}</b></div>}
           </div>
         ) : <p className="dim">Reading the rule from the chain.</p>}
+        <Qc name="QoreChain account abstraction" href={AGENT_SPIKE} link="how we tested it">an ed25519 key linked to the operator account, bound by an on chain spending rule</Qc>
       </section>
 
       <section className="vfix">
@@ -86,6 +88,7 @@ export default function Proof() {
         </div>
       </section>
 
+      <Qc name="On QoreChain, per batch" className="pq">orders sealed with QoreSeal, posted to BlindSettlement on QoreChain EVM, the curve and every order signature checked by pqcVerify 0x0A01, rebalancing on x/amm pool 3</Qc>
       <div className="filters tabs" role="tablist">
         {(["all", "app", "test"] as const).map((k) => <button key={k} role="tab" aria-selected={filter === k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{k === "all" ? "All" : k === "app" ? "From the app" : "Test traders"}</button>)}
       </div>

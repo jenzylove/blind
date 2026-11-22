@@ -196,7 +196,7 @@ export async function sealOrder(acc: UnifiedAccount, s: State, p: { buy: boolean
     user: acc.evm as Hex, batch, expiry: head + (p.standing ? p.standing.blocks : 400n), buy: p.buy,
     amountIn: p.amountIn, minOut: minOutFor(p.buy, p.amountIn, mid, p.bps), nonce: BigInt(Date.now()),
   };
-  const msg = (await pub.readContract({ address: s.contract as Hex, abi: abi as any, functionName: "orderMessage", args: [order] })) as Hex;
+  const msg = (await pub.readContract({ address: s.contract as Hex, abi: abi as any, functionName: "signedOrderBytes", args: [order] })) as Hex;
   const sig = pqcSign(acc.pqc.secretKey, hexToBytes(msg));
   const plaintext = hexToBytes(encodeAbiParameters(ORDER_T, [order, toHex(sig)]));
   const key = p.standing ? s.standingKey : s.batch.publicKey;

@@ -118,7 +118,7 @@ export class Engine {
         user: it.acc.evm as Hex, batch: id, expiry: BigInt(head + 400), buy: it.buy, amountIn: it.amountIn, nonce: BigInt(Date.now()),
         minOut: it.buy ? (it.amountIn * SCALE * 10_000n) / (mid0 * (10_000n + it.limitBps)) : (it.amountIn * mid0 * (10_000n - it.limitBps)) / (SCALE * 10_000n),
       };
-      const msg = await this.read<Hex>("orderMessage", [o]);
+      const msg = await this.read<Hex>("signedOrderBytes", [o]);
       const sig = toHex(pqcSign(it.acc.pqc.secretKey, hexToBytes(msg)));
       const env = seal({ chainId: NET.chainId, purpose, recipients: [recipientOf(keys)], plaintext: hexToBytes(encodeAbiParameters(ORDER_T, [o, sig])) });
       const p = await this.tx("post", [id, toHex(env)]);

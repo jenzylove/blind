@@ -11,15 +11,19 @@ import { pqcSign, type UnifiedAccount } from "@qorechain/sdk";
 import { mldsa87 } from "@qorechain/pqc";
 import { evmWindowStatus } from "@qorechain/evm";
 import { open as openEnvelope, sealKeysFromSeed, recipientOf } from "@qorechain/qoreseal";
-import { pub, send, windowMsg, NET, artifact } from "../src/chain.ts";
+import { pub, send, windowMsg, NET, artifact, state } from "../src/chain.ts";
 import { Engine, readPool, makerInventory, ORDER_T, type Order } from "../src/engine/batch.ts";
 import { makeQuote, clearingPrice, markout, SCALE, type Curve } from "../src/agent/policy.ts";
 
 const { abi } = artifact("BlindSettlement");
 const INTAKE_MS = Number(process.env.INTAKE_MS ?? 20_000);
 const DATA = process.env.DATA_DIR ?? "data";
-const STORE = `${DATA}/batches.json`;
-const STANDING_STORE = `${DATA}/standing.json`;
+// Each contract version numbers its batches from 1, so each keeps its own records.
+const DEP = state.read() as any;
+export const VERSION: number = DEP.version ?? 2;
+const STORE = VERSION >= 3 ? `${DATA}/batches-v${VERSION}.json` : `${DATA}/batches.json`;
+const STANDING_STORE = VERSION >= 3 ? `${DATA}/standing-v${VERSION}.json` : `${DATA}/standing.json`;
+const V2_LIVE = `${DATA}/batches.json`;
 const MAX_ORDERS = 32;
 const MAX_STANDING = 40;
 const purposeOf = (settlement: string, id: bigint | number) => `blind-order-v1:${settlement.toLowerCase()}:${id}`;
@@ -37,6 +41,7 @@ export class BatchLoop {
   standing: Standing[] = [];
   records: any[] = [];
   history: any[] = []; // unattended test runs before the app went live (test trader accounts)
+  earlier: any[] = []; // live app batches on the previous contract version (read only)
   private queue: Promise<unknown> = Promise.resolve();
   private extMoves: bigint[] = [];
   private lastMidAfter: bigint | null = null;
@@ -46,9 +51,14 @@ export class BatchLoop {
   constructor(public engine: Engine, standingSeedHex: string) {
     mkdirSync(DATA, { recursive: true });
     // First boot on a fresh volume: start from the live batches recorded before the move.
-    if (!existsSync(STORE) && existsSync("deployments/batches-live.json")) writeFileSync(STORE, readFileSync("deployments/batches-live.json"));
     if (existsSync(STORE)) this.records = JSON.parse(readFileSync(STORE, "utf8"));
-    if (existsSync("deployments/batches-curve.json")) this.history = JSON.parse(readFileSync("deployments/batches-curve.json", "utf8")).filter((r: any) => r.settled);
+    const v2 = DEP.v2?.settlement ?? DEP.settlement;
+    if (existsSync("deployments/batches-curve.json")) this.history = JSON.parse(readFileSync("deployments/batches-curve.json", "utf8")).filter((r: any) => r.settled).map((r: any) => ({ ...r, version: 2, contract: v2 }));
+    if (VERSION >= 3) {
+      // The previous version's live batches: the volume's file if this host ran them, else the snapshot in the repo.
+      const src = existsSync(V2_LIVE) ? V2_LIVE : "deployments/batches-v2-live.json";
+      if (existsSync(src)) this.earlier = JSON.parse(readFileSync(src, "utf8")).map((r: any) => ({ ...r, version: 2, contract: v2 }));
+    }
     this.next = this.freshKey();
     this.standingSeed = hexToBytes(standingSeedHex as Hex);
     if (this.standingSeed.length !== 32) throw new Error("STANDING_SEED must be 32 bytes hex");
@@ -132,7 +142,7 @@ export class BatchLoop {
     // The same checks the contract makes at settlement, done now so a bad order can never stall a batch.
     const key = await this.engine.read<Hex>("keyOf", [o.user]).catch(() => null);
     if (!key) throw new Error("the order's account has no proven post quantum key on chain");
-    const msg = await this.engine.read<Hex>("orderMessage", [o]);
+    const msg = await this.engine.read<Hex>("signedOrderBytes", [o]);
     if (!mldsa87.verify(hexToBytes(key), hexToBytes(msg), hexToBytes(sig))) throw new Error("the order's signature does not verify");
     const r = await this.submit(envelope);
     this.standing.push({ o, sig, postedTx: r.hash, hash });
@@ -169,7 +179,7 @@ export class BatchLoop {
   private async close() {
     const cur = this.current!;
     const id = BigInt(cur.id);
-    const rec: any = { batch: cur.id, live: true, startedAt: new Date(cur.closesAt - INTAKE_MS).toISOString(), create: (cur as any).create, posts: cur.posts, dropped: [], curveVersion: 2 };
+    const rec: any = { batch: cur.id, version: VERSION, contract: this.settlement, live: true, startedAt: new Date(cur.closesAt - INTAKE_MS).toISOString(), create: (cur as any).create, posts: cur.posts, dropped: [], curveVersion: 2 };
     try {
       // Quote from public data only, before anything can be opened.
       this.phase = "quoting";

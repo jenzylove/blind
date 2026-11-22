@@ -6,7 +6,8 @@ import {
   placeSwap, placeLimit, minOutFor, pub, publicSwap, publicSwapResult, bankDenom, type Built,
 } from "../lib/chain";
 import { usd, eth, short, blockNo, pct, edgeBps } from "../lib/fmt";
-import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled } from "../ui";
+import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled, Qc, StepQc } from "../ui";
+import { txUrl, STEP_TECH, viaLinkedKey, COMMIT_PLAIN } from "../lib/qore";
 import Blind from "../Blind";
 import BatchPanel from "../BatchPanel";
 
@@ -216,16 +217,19 @@ function BatchBar({ s, down, now, tracked }: { s: State | null; down: boolean; n
       <p className="cap">{state === "open"
         ? `${shown ? `In daylight: batch ${shown.batch}, settled${shown.live ? "" : " by our test traders"}. ` : ""}The blind closes when the next batch takes orders.`
         : state === "opening" ? "The price is locked on chain. The blind is opening." : "Closed. Orders in this batch stay sealed until the price is locked."}</p>
+      {s && (step === 5
+        ? <Qc name="x/amm pool 3">the agent rebalances from a separate account, hybrid signed</Qc>
+        : <StepQc i={Math.max(0, step)} />)}
     </div>
   );
 }
 
 // ------------------------------------------------------------------ account, as a guided stepper
-const GUIDE: { k: (keyof Setup)[]; t: string; d: string }[] = [
-  { k: ["keys"], t: SETUP_TEXT.keys[0], d: SETUP_TEXT.keys[1] },
-  { k: ["fund"], t: SETUP_TEXT.fund[0], d: SETUP_TEXT.fund[1] },
-  { k: ["key"], t: SETUP_TEXT.key[0], d: SETUP_TEXT.key[1] },
-  { k: ["window", "approve"], t: SETUP_TEXT.approve[0], d: "Lets settlement move the tokens you sell, fUSD and fETH only. A short window allows the two approvals." },
+const GUIDE: { k: (keyof Setup)[]; t: string; d: string; q: [string, string]; tx: string[] }[] = [
+  { k: ["keys"], t: SETUP_TEXT.keys[0], d: SETUP_TEXT.keys[1], q: ["@qorechain/sdk", "a secp256k1 key and an ML-DSA-87 key, both made in this browser"], tx: [] },
+  { k: ["fund"], t: SETUP_TEXT.fund[0], d: SETUP_TEXT.fund[1], q: ["Faucet tokens", "the relayer converts bank coins to ERC-20 with MsgConvertCoin"], tx: ["Funds"] },
+  { k: ["key"], t: SETUP_TEXT.key[0], d: SETUP_TEXT.key[1], q: ["MsgRegisterPQCKeyV2", "your ML-DSA-87 key, with proof of possession. After this every transaction is hybrid signed, and QoreSign checks both halves before the relayer broadcasts"], tx: ["Key registered"] },
+  { k: ["window", "approve"], t: SETUP_TEXT.approve[0], d: "Lets settlement move the tokens you sell, fUSD and fETH only. A short window allows the two approvals.", q: ["Scoped EVM window", "2 transactions within 600 blocks, to fUSD and fETH only, then the two approvals on QoreChain EVM"], tx: ["Window", "Approval 1"] },
 ];
 function stOf(setup: Setup, ks: (keyof Setup)[]): StepState {
   const v = ks.map((k) => setup[k]);
@@ -247,6 +251,10 @@ function AccountPanel(p: { restoring: boolean; acc: UnifiedAccount | null; me: M
       {GUIDE.map((g, i) => (
         <div key={g.t} className={`stp ${states[i]} ${i === cur ? "cur" : ""}`}>
           <div className="stph"><span className="n">{states[i] === "done" ? "✓" : i + 1}</span><h3>{g.t}</h3></div>
+          {(() => {
+            const h = g.tx.map((k) => p.hashes.find((x) => x.k === k)?.h).find(Boolean);
+            return <Qc name={g.q[0]} className="ind" href={h ? txUrl(h) : undefined} link={h ? "your transaction" : undefined}>{g.q[1]}</Qc>;
+          })()}
           {i === cur && (
             <div className="stpb">
               <p>{g.d}</p>
@@ -374,7 +382,7 @@ function SwapBox({ s, acc, me, ready, onPlaced }: { s: State | null; acc: Unifie
       </div>
       <button className="btn day go" onClick={go} disabled={!!block || !!busy}>{busy ? "Sealing…" : block || "Seal and send"}</button>
       {busy && <div className="msg">{busy}</div>}
-      {sealed && busy && <div className="msg small">{sealed.bytes.toLocaleString("en-US")} bytes sealed with ML-KEM-1024, signed with ML-DSA-87.</div>}
+      {sealed && busy && <div className="msg small">QoreSeal: {sealed.bytes.toLocaleString("en-US")} bytes sealed with ML-KEM-1024 + X25519, signed with your ML-DSA-87 key.</div>}
       {err && <div className="msg err">{err}</div>}
     </div>
   );
@@ -471,7 +479,7 @@ function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Un
         <Blind state={f ? "open" : "closed"} flat className="small">
           {f && r ? <Result f={f} rec={r} /> : <div className="res"><div className="k">Waiting</div><div className="vs">Checked in every batch until block {blockNo(Number(t.expiry))}.</div></div>}
         </Blind>
-        <div className="it done"><span className="st">Posted</span><span>Sealed to the standing key, block {blockNo(t.postBlock)}</span><TxLink h={t.postHash} label="view" /></div>
+        <div className="it done"><span className="st">Posted</span><span>Sealed to the standing key, block {blockNo(t.postBlock)}</span><TxLink h={t.postHash} label="view" /><Qc name="QoreSeal and @qorechain/pqc">sealed in this browser; your ML-DSA-87 signature was checked on arrival</Qc></div>
         {!f && <div className="it on"><span className="st">Waiting</span><span>Checked in every batch until block {blockNo(Number(t.expiry))}.</span><span /></div>}
       </div>
     );
@@ -480,12 +488,12 @@ function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Un
   const step = rec ? 5 : s && s.batch.id === t.batch ? phaseStep(s.phase) : s && s.batch.id > t.batch ? 5 : 1;
   const mine = rec?.fills?.findIndex((f) => f.user.toLowerCase() === me && f.amountIn === t.amountIn && !f.standing) ?? -1;
   const dropped = rec?.dropped?.find((d) => d.user.toLowerCase() === me);
-  const items: { st: string; text: string; h?: string; on: boolean; done: boolean }[] = [
-    { st: "Sealed", text: `${t.bytes.toLocaleString("en-US")} bytes, signed in this browser`, on: false, done: true },
-    { st: "Posted", text: `Batch ${t.batch}, block ${blockNo(t.postBlock)}`, h: t.postHash, on: false, done: true },
-    { st: "Price locked", text: rec?.commit ? `Market maker price locked in block ${blockNo(rec.commit.block)}` : "The market maker locks its price after intake closes", h: rec?.commit?.hash, on: step === 2 || step === 1, done: step > 2 },
-    { st: "Opened", text: rec?.open ? `Batch key revealed in block ${blockNo(rec.open.block)}` : "The batch key is revealed in a later block", h: rec?.open?.hash, on: step === 3, done: step > 3 },
-    { st: "Settled", text: rec?.settle ? `One price for everyone, block ${blockNo(rec.settle.block)}` : rec ? "This batch did not settle" : "One transaction settles the batch", h: rec?.settle?.hash, on: step === 4, done: !!rec?.settle },
+  const items: { st: string; text: string; h?: string; on: boolean; done: boolean; q?: ReactNode }[] = [
+    { st: "Sealed", text: `${t.bytes.toLocaleString("en-US")} bytes, signed in this browser`, on: false, done: true, q: <StepQc i={0} /> },
+    { st: "Posted", text: `Batch ${t.batch}, block ${blockNo(t.postBlock)}`, h: t.postHash, on: false, done: true, q: <StepQc i={1} /> },
+    { st: "Price locked", text: rec?.commit ? `Market maker price locked in block ${blockNo(rec.commit.block)}` : "The market maker locks its price after intake closes", h: rec?.commit?.hash, on: step === 2 || step === 1, done: step > 2, q: rec?.commit && !viaLinkedKey(rec.commit.hash) ? <Qc name={COMMIT_PLAIN.name}>{COMMIT_PLAIN.rest}</Qc> : <StepQc i={2} href="/proof#agent" link="the rule" /> },
+    { st: "Opened", text: rec?.open ? `Batch key revealed in block ${blockNo(rec.open.block)}` : "The batch key is revealed in a later block", h: rec?.open?.hash, on: step === 3, done: step > 3, q: <StepQc i={3} /> },
+    { st: "Settled", text: rec?.settle ? `One price for everyone, block ${blockNo(rec.settle.block)}` : rec ? "This batch did not settle" : "One transaction settles the batch", h: rec?.settle?.hash, on: step === 4, done: !!rec?.settle, q: <StepQc i={4}>{rec?.settle && mine >= 0 ? "checked your ML-DSA-87 signature against the key pqcKeyStatus 0x0A02 reports" : undefined}</StepQc> },
   ];
   return (
     <div className="track">
@@ -496,7 +504,7 @@ function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Un
           : <div className="res"><div className="k">Sealed</div><div className="vs">Opens after the market maker's price is locked on chain.</div></div>}
       </Blind>
       {items.map((x) => (
-        <div key={x.st} className={`it ${x.done ? "done" : x.on ? "on" : ""}`}><span className="st">{x.st}</span><span>{x.text}</span>{x.h ? <TxLink h={x.h} label="view" /> : <span />}</div>
+        <div key={x.st} className={`it ${x.done ? "done" : x.on ? "on" : ""}`}><span className="st">{x.st}</span><span>{x.text}</span>{x.h ? <TxLink h={x.h} label="view" /> : <span />}{x.q}</div>
       ))}
     </div>
   );
@@ -697,6 +705,7 @@ function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: UnifiedAccount;
 
       <section className="lanep">
         <div className="laneh"><b>Public swap on x/amm</b><span>In full daylight. Anyone watching the mempool reads it.</span></div>
+        <Qc name="x/amm pool 3" className="lq" href={d.publicHash ? txUrl(d.publicHash) : undefined} link={d.publicHash ? "your swap" : undefined}>a hybrid signed swap, checked by QoreSign before broadcast. The bot reads QoreChain's public mempool (unconfirmed_txs)</Qc>
         <div className="daylane">
           <div className="ord">
             <div><span>Side</span><b>{d.buy ? "Buy fETH" : "Sell fETH"}</b></div>
@@ -726,6 +735,7 @@ function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: UnifiedAccount;
 
       <section className="lanep">
         <div className="laneh"><b>Sealed swap on Blind</b><span>Behind the slats until the price is locked.</span></div>
+        <Qc name="QoreSeal" className="lq">{STEP_TECH[0].rest}. Settled on QoreChain EVM, checked by pqcVerify 0x0A01</Qc>
         {d.blindErr ? <div className="msg err">{d.blindErr}</div>
           : !d.blind ? <div className="msg">Sealing in your browser.</div>
           : <>

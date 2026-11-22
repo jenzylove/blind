@@ -36,18 +36,18 @@ async function deploy() {
   const prev = state.read();
   if (prev.settlement) {
     // Keep the previous version's record: its batches stay checkable on chain.
-    const { v1, ...rest } = prev;
-    state.write({ v1: v1 ?? rest });
+    const { v1, v2, ...rest } = prev as any;
+    state.write({ v1, v2, [`v${rest.version ?? 2}`]: rest });
   }
   await window(op, 1n, 3_000_000n, undefined, "operator window: 1 tx (deploy)");
   try {
     const hash = await evmWallet(op).deployContract({
       abi, bytecode, gas: 3_000_000n, ...fees,
-      args: [TOKENS.fETH.address, TOKENS.fUSD.address, agent.evm, op.evm, hedger.evm, 600n],
+      args: [TOKENS.fETH.address, TOKENS.fUSD.address, agent.evm, op.evm, hedger.evm, 600n, NET.chainId],
     });
     const rc = await pub.waitForTransactionReceipt({ hash });
     console.log(`BlindSettlement ${rc.contractAddress} tx ${hash} status ${rc.status}`);
-    state.write({ chainId: 9800, version: 2, settlement: rc.contractAddress, deployTx: hash, base: "fETH", quote: "fUSD",
+    state.write({ chainId: 9800, version: 3, msgDomain: `qorechain-msg-v1|${NET.chainId}|`, settlement: rc.contractAddress, deployTx: hash, base: "fETH", quote: "fUSD",
       agent: agent.evm, settler: op.evm, treasury: hedger.evm, settleWindowBlocks: 600, firstBatch: undefined, stockTx: undefined });
   } finally { await sleep(2000); await closeWindow(op); }
 }
@@ -123,7 +123,7 @@ async function batch() {
   const purpose = `blind-order-v1:${settlement.toLowerCase()}:${id}`;
   run.posts = [];
   for (const { acc, o } of orders) {
-    const msg = (await pub.readContract({ address: settlement, abi, functionName: "orderMessage", args: [o] })) as Hex;
+    const msg = (await pub.readContract({ address: settlement, abi, functionName: "signedOrderBytes", args: [o] })) as Hex;
     const sig = toHex(pqcSign(acc.pqc.secretKey, hexToBytes(msg)));
     const plaintext = hexToBytes(encodeAbiParameters(ORDER_T, [o, sig]));
     const env = seal({ chainId: NET.chainId, purpose, recipients: [recipientOf(keys)], plaintext });
@@ -177,10 +177,12 @@ async function batch() {
 }
 
 /** Move the old contract's inventory to the treasury: only the agent's ML-DSA-87 signature can. */
-async function withdrawV1() {
-  const old = state.read().v1.settlement as Hex;
+/** Move an earlier version's maker inventory to the treasury, by the agent's ML-DSA-87 signature. */
+async function withdrawV1(ver = process.argv[3] ?? "1") {
+  const key = `v${ver}`;
+  const old = (state.read() as any)[key].settlement as Hex;
   const res: any[] = [];
-  await window(op, 2n, 320_000n, [old], "operator window: 2 txs, target = v1 contract only");
+  await window(op, 2n, 320_000n, [old], `operator window: 2 txs, target = ${key} contract only`);
   for (const t of [TOKENS.fETH.address, TOKENS.fUSD.address]) {
     const bal = (await pub.readContract({ address: t, abi: ERC20_ABI, functionName: "balanceOf", args: [old] })) as bigint;
     const n = (await pub.readContract({ address: old, abi, functionName: "withdrawNonce" })) as bigint;
@@ -188,12 +190,12 @@ async function withdrawV1() {
     const sig = toHex(pqcSign(agent.pqc.secretKey, hexToBytes(msg)));
     const hash = await evmWallet(op).writeContract({ address: old, abi, functionName: "withdraw", args: [t, bal, sig], gas: 320_000n, ...fees });
     const rc = await pub.waitForTransactionReceipt({ hash });
-    console.log(`v1 withdraw ${bal} of ${t} to treasury: ${hash} ${rc.status}`);
+    console.log(`${key} withdraw ${bal} of ${t} to treasury: ${hash} ${rc.status}`);
     res.push({ token: t, amount: bal.toString(), hash, status: rc.status });
   }
   await closeWindow(op);
-  const v1 = state.read().v1;
-  state.write({ v1: { ...v1, withdrawnToTreasury: res } });
+  const prev = (state.read() as any)[key];
+  state.write({ [key]: { ...prev, withdrawnToTreasury: res } });
 }
 
 const cmd = process.argv[2];

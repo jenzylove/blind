@@ -401,7 +401,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .tlr > span.mono { grid-column: 2; grid-row: 1; text-align: right; }
   .tlr > .txl { grid-column: 2; grid-row: 2; }
   .it { grid-template-columns: 90px 1fr; }
-  .it > :last-child { grid-column: 2; }
+  .it > :nth-child(3), .it > .qc { grid-column: 2; }
+
   .res .big { font-size: 26px; }
   .tbl.resp thead { display: none; }
   .tbl.resp tr { display: block; border-bottom: 1px solid var(--line); padding: 10px 0; }
@@ -457,4 +458,37 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .atk .atkl { grid-column: 1 / 3; }
   .blind.lane { --band: 44px; --h: 220px; }
   .tabs { gap: 18px; }
+}
+
+/* ---------------------------------------------------------- QoreChain, named where it works */
+.qc { margin: 10px 0 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--fg3); max-width: 46em; }
+.qc b { font-weight: 400; color: var(--fg2); }
+.qc a { color: var(--fg2); border-bottom: 1px solid var(--line2); white-space: nowrap; }
+.qc a:hover { color: var(--fg); border-color: var(--fg3); }
+.qc.ind { padding-left: 44px; margin-top: 6px; }
+.it .qc { grid-column: 2 / -1; margin: -4px 0 0; }
+.tlr .qc { grid-column: 2 / -1; margin: -6px 0 0; }
+.qc.lq { margin: -6px 0 16px; }
+.qc.pq { margin: 0 0 18px; }
+.livebatch .qc { margin-top: 6px; }
+.built { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); max-width: 1120px; }
+.built li { display: grid; grid-template-columns: 44px minmax(0, 290px) minmax(0, 1fr) auto; gap: 6px 32px; padding: 22px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.built .bi { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.built .bt b { display: block; font-size: 19px; font-weight: 800; letter-spacing: -.01em; line-height: 1.3; }
+.built .bt span { display: block; font-family: var(--mono); font-size: 12px; color: var(--fg3); margin-top: 4px; }
+.built p { margin: 0; color: var(--fg2); font-size: 15px; max-width: 40em; }
+.built .bl { font-family: var(--mono); font-size: 12.5px; color: var(--fg2); border-bottom: 1px solid var(--line2); white-space: nowrap; justify-self: end; }
+.built .bl:hover { color: var(--fg); }
+.foot .kits { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.foot .kits a { color: var(--fg3); }
+.foot .kits a:hover { color: var(--fg); }
+@media (max-width: 900px) {
+  .built li { grid-template-columns: 36px minmax(0, 1fr); gap: 8px 14px; }
+  .built p, .built .bl { grid-column: 2; }
+  .built .bl { justify-self: start; white-space: normal; }
+  .qc.ind { padding-left: 0; }
+}
+@media (max-width: 720px) {
+  .tlr .qc { grid-column: 1 / -1; grid-row: 3; margin: 0; }
+  .it .qc { grid-column: 2; margin: 0; }
 }

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type BatchRec, type Batches, type BotStats } from "../lib/api";
 import { short, blockNo, summarize, pct, inLabel, price, ago } from "../lib/fmt";
-import { Link, Edge, usePoll, useReveal, navigate, latestSettled, SlatGlyph, STEPS, attemptIn, attemptOut, AttemptLinks } from "../ui";
+import { Link, Edge, usePoll, useReveal, navigate, latestSettled, SlatGlyph, STEPS, attemptIn, attemptOut, AttemptLinks, StepQc, Qc, useLive } from "../ui";
+import { viaLinkedKey, COMMIT_PLAIN, txUrl, CONTRACT_URL, RELAY_SRC, LIMIT_SRC, QORESCAN_URL, QCAI_URL, STEP_TECH } from "../lib/qore";
 import Blind, { type BlindState } from "../Blind";
 import BatchPanel from "../BatchPanel";
 
@@ -15,6 +16,7 @@ export default function Landing() {
       <Hero rec={rec} />
       <Problem rec={rec} bot={bot} />
       <How rec={rec} />
+      <Built rec={rec} />
       <ProofSec b={b} />
       <Limits />
       <Faq />
@@ -31,6 +33,7 @@ export default function Landing() {
 }
 
 const blindFor = (step: number): BlindState => (step >= 4 ? "open" : step === 3 ? "opening" : "closed");
+const hashesOf = (rec: BatchRec) => [undefined, rec.posts?.[0]?.hash ?? rec.create?.hash, rec.commit?.hash, rec.open?.hash, rec.settle?.hash] as (string | undefined)[];
 const blocksOf = (rec: BatchRec) => [null, rec.posts?.[0]?.block ?? rec.create!.block, rec.commit!.block, rec.open!.block, rec.settle!.block] as (number | null)[];
 
 // ------------------------------------------------------------------ hero
@@ -142,6 +145,8 @@ function How({ rec }: { rec: BatchRec | null }) {
     return () => io.disconnect();
   }, []);
   const bl = rec ? blocksOf(rec) : null;
+  const hs = rec ? hashesOf(rec) : null;
+  const bytes = rec?.posts?.find((p) => p.bytes)?.bytes;
   return (
     <section className="sec wrap" id="how">
       <SecHead n="02" title="How a batch works" lead={rec ? `Five steps, played with the real blocks of batch ${rec.batch}. The price is on chain before any order can be read.` : "Five steps. The price is on chain before any order can be read."} />
@@ -156,6 +161,11 @@ function How({ rec }: { rec: BatchRec | null }) {
               <div className="k"><span>{String(i + 1).padStart(2, "0")}</span><span>{bl ? (bl[i] ? `block ${blockNo(bl[i]!)}` : "in your browser") : ""}</span></div>
               <h3>{s.n}</h3>
               <p>{s.p}</p>
+              {i === 2 && rec && !viaLinkedKey(rec.commit?.hash)
+                ? <Qc name={COMMIT_PLAIN.name} href={hs?.[2] ? txUrl(hs[2]!) : undefined} link={`batch ${rec.batch}, this step`}>{COMMIT_PLAIN.rest}</Qc>
+                : <StepQc i={i} href={hs?.[i] ? txUrl(hs[i]!) : undefined} link={rec ? `batch ${rec.batch}, this step` : undefined}>
+                  {i === 0 && bytes ? `${STEP_TECH[0].rest}. ${bytes.toLocaleString("en-US")} bytes per order` : undefined}
+                </StepQc>}
             </li>
           ))}
         </ol>
@@ -164,13 +174,50 @@ function How({ rec }: { rec: BatchRec | null }) {
   );
 }
 
-// ------------------------------------------------------------------ 03 proof
+// ------------------------------------------------------------------ 03 built on QoreChain
+interface Row { name: string; what: string; use: string; href: string; link: string }
+function Built({ rec }: { rec: BatchRec | null }) {
+  const { s } = useLive();
+  const tx = (h: string | undefined, fallback: string) => (h ? txUrl(h) : fallback);
+  const rows: Row[] = [
+    { name: "ML-DSA-87 accounts and precompiles", what: "Post quantum keys held on chain", use: "Every test account registers its ML-DSA-87 key with proof of possession (MsgRegisterPQCKeyV2) and hybrid signs everything after. At settlement BlindSettlement checks each order's signature through pqcVerify (0x0A01) against the key pqcKeyStatus (0x0A02) reports.", href: tx(rec?.settle?.hash, CONTRACT_URL), link: rec ? `Settlement of batch ${rec.batch}` : "The contract" },
+    { name: "QoreSeal", what: "Hybrid post quantum sealed envelopes", use: "Seals every order in your browser: ML-KEM-1024 + X25519, 6,648 bytes each, so a bot reading the chain learns nothing.", href: tx(rec?.posts?.[0]?.hash, CONTRACT_URL), link: rec ? `A sealed order in batch ${rec.batch}` : "The contract" },
+    { name: "Scoped EVM windows", what: "Limits on what EVM keys do", use: "Your test account opens a window for two approvals, to fUSD and fETH only. The operator posts, reveals and settles inside its own window: 300 transactions, 3,000 blocks, BlindSettlement only.", href: CONTRACT_URL, link: "BlindSettlement on QoreChain EVM" },
+    { name: "Account abstraction spending rule", what: "Linked keys with chain enforced limits", use: "The market maker agent commits prices with its own ed25519 key linked to the operator account. The chain lets it call commit on Blind and nothing else, 1 uqor per call and per day, for 29 days.", href: "/proof#agent", link: "The live rule" },
+    { name: "QoreSign", what: "Hybrid signature checks before broadcast", use: "The relayer checks both halves of every transaction your browser sends, including ML-DSA-87 against the key registered on chain, before it broadcasts.", href: RELAY_SRC, link: "The relay check" },
+    { name: "x/amm", what: "QoreChain's built in exchange", use: "The agent rebalances on pool 3 (fETH/fUSD) from a separate account. Every fill is compared with it, and the public lane swaps on it while our bot reads the public mempool.", href: tx(rec?.hedge?.hash, "/proof#bot"), link: rec?.hedge?.hash ? `Rebalance after batch ${rec.batch}` : "The bot's record" },
+    { name: "@qorechain/pqc", what: "ML-DSA-87 in plain JavaScript", use: "Checks a limit order's signature the moment it arrives, before it waits for a batch.", href: LIMIT_SRC, link: "Where it runs" },
+    { name: "QoreScan", what: "Cryptography inventory of a project", use: "A CBOM of Blind's accounts, live site and contract: what is post quantum, and what is not.", href: QORESCAN_URL, link: "The scan" },
+    { name: "QCAI audit", what: "QoreChain's AI contract auditor", use: "Reviewed BlindSettlement. Our answer to each finding points at a test that proves it.", href: QCAI_URL, link: "The answers" },
+    { name: "Faucet tokens", what: "Test fUSD and fETH", use: "The relayer funds each test account and converts bank coins into ERC-20 tokens with MsgConvertCoin.", href: s ? `https://explore.qore.network/address/${s.tokens.fUSD.address}` : CONTRACT_URL, link: s ? "fUSD token" : "The contract" },
+  ];
+  return (
+    <section className="sec wrap" id="qorechain">
+      <SecHead n="03" title="Built on QoreChain" lead="Each piece of QoreChain that does real work in Blind, in order of how much rests on it." />
+      <ol className="built rv">
+        {rows.map((r, i) => {
+          const ext = !r.href.startsWith("/proof");
+          return (
+            <li key={r.name}>
+              <span className="bi">{String(i + 1).padStart(2, "0")}</span>
+              <div className="bt"><b>{r.name}</b><span>{r.what}</span></div>
+              <p>{r.use}</p>
+              {ext ? <a className="bl" href={r.href} target="_blank" rel="noreferrer">{r.link} <span aria-hidden>↗</span></a> : <Link className="bl" to={r.href}>{r.link}</Link>}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+// ------------------------------------------------------------------ 04 proof
 function ProofSec({ b }: { b: Batches | null }) {
   const all = b ? [...b.live, ...b.testRuns].sort((x, y) => y.batch - x.batch) : [];
   const s = summarize(all);
   return (
     <section className="sec wrap" id="proof">
-      <SecHead n="03" title="The proof, batch by batch" lead="Every fill next to what QoreChain's own exchange (x/amm) would have paid for the same input, one block before settlement. Misses stay in." />
+      <SecHead n="04" title="The proof, batch by batch" lead="Every fill next to what QoreChain's own exchange (x/amm) would have paid for the same input, one block before settlement. Misses stay in." />
       <div className="rv">
         <div className="figs">
           <div><b>{b ? s.batches : "…"}</b><span>batches settled</span></div>
@@ -201,7 +248,7 @@ function ProofSec({ b }: { b: Batches | null }) {
 function Limits() {
   return (
     <section className="sec wrap" id="limits">
-      <SecHead n="04" title="What the chain checks, and what it does not" lead="Sealing stops bots from reading your order, and the market maker locks its price before any order opens. It does not remove every party you trust." />
+      <SecHead n="05" title="What the chain checks, and what it does not" lead="Sealing stops bots from reading your order, and the market maker locks its price before any order opens. It does not remove every party you trust." />
       <div className="limits rv">
         <div className="lit">
           <h3>In daylight: the chain checks</h3>
@@ -242,7 +289,7 @@ const QA: [string, string][] = [
 function Faq() {
   return (
     <section className="sec wrap" id="faq">
-      <SecHead n="05" title="Questions" />
+      <SecHead n="06" title="Questions" />
       <div className="faq rv">
         {QA.map(([q, a], i) => (
           <details className="qa" key={q} open={i === 0} {...{ name: "faq" }}><summary>{q}</summary><div className="a">{a}</div></details>

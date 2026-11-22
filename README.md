@@ -8,7 +8,7 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum AI Agen
 
 | | |
 |---|---|
-| Settlement contract | [`0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf`](https://explore.qore.network/address/0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf) on `qorechain-diana` (on the explorer, switch to Testnet at the top right) |
+| Settlement contract (v3) | [`0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e`](https://explore.qore.network/address/0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e) on `qorechain-diana` (on the explorer, switch to Testnet at the top right) |
 | Every batch, misses included | https://blind.jdollar.site/proof |
 | The agent's on-chain spending rule, read live | https://blind.jdollar.site/proof and `/api/agent` |
 | QCAI audit and our answer to each finding | [docs/audit/QCAI.md](docs/audit/QCAI.md) |
@@ -16,7 +16,7 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum AI Agen
 
 ## How a batch works
 
-1. **Seal.** Your browser signs the order with your ML-DSA-87 key (registered on QoreChain) and seals it with ML-KEM-1024 to this batch's public key. The plain order never leaves the browser.
+1. **Seal.** Your browser signs the order with your ML-DSA-87 key (registered on QoreChain), under QoreChain's message domain (`qorechain-msg-v1|qorechain-diana|`), the same bytes a QoreX wallet signs, and seals it with ML-KEM-1024 to this batch's public key. The plain order never leaves the browser.
 2. **Post.** The sealed envelope goes on chain. Anyone can see that an order exists, but not its side, size or limit. Every envelope is the same size.
 3. **Commit.** The market maker agent prices from public data only: the x/amm pool, its inventory and outside volatility. It signs a quote curve with its ML-DSA-87 key and commits it on chain. This closes intake.
 4. **Reveal.** In a later block, never the same one, the batch key is revealed. The contract checks it against the fingerprint fixed when the batch was created. Anyone can now open every envelope from chain data.
@@ -32,7 +32,7 @@ When buyers and sellers meet in a batch, they trade with each other at one price
 
 The market maker agent doesn't hold the operator's key. It commits its price curve with its own ed25519 key, which is linked to the operator account with a spending rule that QoreChain enforces:
 
-- **Allowed calls:** the only call it may make is `commit` on BlindSettlement (`allowed_evm_calls` = `0xbdbd…f3cf/0x6225710f`).
+- **Allowed calls:** the only call it may make is `commit` on BlindSettlement (`allowed_evm_calls` = `0xb9a3…836e/0x6225710f`).
 - **Value:** at most 1 uqor per transaction and 1 uqor a day.
 - **Expiry:** the key expires after 29 days.
 - **Signature:** each curve must also carry the agent's ML-DSA-87 signature, which the contract checks.
@@ -71,7 +71,7 @@ You trust the operator for the rest:
 | Market maker agent, ML-DSA-87 quote key (`AGENT`) | `qor1nzm5ym498uv26n7vzx6j5wudqzxqyvywx85ay2` (`0x98b7426ea53F18Ad4FcC11B52a3B8d008C02308e`) |
 | Agent's linked ed25519 key on the operator account | `0xd6c12f40051980dcc8f1c0c2fe110c29a6a67c88c66c209ca99be3d3f9fe938c` |
 | Hedger and treasury (`HEDGER`) | `qor1j4mrfz0l2mf6cmduxngm70rjejm5slj2xvrvkd` (`0x95763489fF56D3ac6dBc34d1BF3c72ccb7487E4A`) |
-| Previous contract (v1, flat band) | `0x4906cbdec09a89bd71aeccaf6e0b450c5a9cecc1` |
+| Previous contracts | v2 (curve, orders signed without QoreChain's message domain) `0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf`; v1 (flat band, the first miss) `0x4906cbdec09a89bd71aeccaf6e0b450c5a9cecc1` |
 
 ## Run it
 
@@ -80,7 +80,7 @@ You need Node 22+ and Foundry.
 ```sh
 git clone --recurse-submodules https://github.com/jenzylove/blind && cd blind
 npm install && npm --prefix web install
-forge test                                  # 31 contract tests
+forge test                                  # 35 contract tests
 npx tsx --test test/*.test.ts               # 11 agent policy tests
 cp .env.example .env                        # testnet keys only
 npm --prefix web run build

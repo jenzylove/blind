@@ -1,6 +1,8 @@
 import { api } from "../lib/api";
 import { price, blockNo, inLabel, outLabel, short, usd, eth } from "../lib/fmt";
-import { Edge, usePoll, TxLink, Link, Curve } from "../ui";
+import { Edge, usePoll, TxLink, Link, Curve, Qc, StepQc } from "../ui";
+import type { ReactNode } from "react";
+import { viaLinkedKey, COMMIT_PLAIN } from "../lib/qore";
 import Blind from "../Blind";
 import BatchPanel from "../BatchPanel";
 
@@ -12,12 +14,13 @@ export default function BatchPage({ id }: { id: number }) {
       <div className="empty">{err ? <>This batch is not recorded yet. It appears here once it has settled. <Link to="/proof">Every batch</Link></> : "Reading the batch."}</div>
     </div>
   );
-  const steps: [string, string, number | undefined, string | undefined][] = [
-    ["Batch opened", "Its key's fingerprint fixed on chain", r.create?.block, r.create?.hash],
-    ...(r.posts ?? []).map((p, i) => [`Sealed order ${i + 1}`, p.bytes ? `${p.bytes.toLocaleString("en-US")} bytes, unreadable` : "Posted, unreadable", p.block, p.hash] as [string, string, number, string]),
-    ["Price locked", "The market maker's signed curve", r.commit?.block, r.commit?.hash],
-    ["Blinds open", "Every order can now be opened from chain data", r.open?.block, r.open?.hash],
-    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fills` : "Did not settle", r.settle?.block, r.settle?.hash],
+  const posts = r.posts ?? [];
+  const steps: [string, string, number | undefined, string | undefined, ReactNode?][] = [
+    ["Batch opened", "Its key's fingerprint fixed on chain", r.create?.block, r.create?.hash, <Qc name="QoreChain EVM">BlindSettlement fixes the batch key's fingerprint</Qc>],
+    ...posts.map((p, i) => [`Sealed order ${i + 1}`, p.bytes ? `${p.bytes.toLocaleString("en-US")} bytes, unreadable` : "Posted, unreadable", p.block, p.hash, i === 0 ? <StepQc i={0} /> : undefined] as [string, string, number, string, ReactNode?]),
+    ["Price locked", "The market maker's signed curve", r.commit?.block, r.commit?.hash, viaLinkedKey(r.commit?.hash) ? <StepQc i={2} href="/proof#agent" link="the rule" /> : <Qc name={COMMIT_PLAIN.name}>{COMMIT_PLAIN.rest}</Qc>],
+    ["Blinds open", "Every order can now be opened from chain data", r.open?.block, r.open?.hash, <Qc name="QoreChain EVM">BlindSettlement checks the revealed key against its fingerprint</Qc>],
+    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fills` : "Did not settle", r.settle?.block, r.settle?.hash, r.settle ? <StepQc i={4} /> : undefined],
   ];
   return (
     <div className="page wrap">
@@ -34,8 +37,8 @@ export default function BatchPage({ id }: { id: number }) {
       <section className="bsec">
         <h3 className="colh">In order, block by block</h3>
         <div className="tl">
-          {steps.map(([a, b, bl, h], i) => (
-            <div className="tlr" key={i}><b>{a}</b><span>{b}</span><span className="mono">{blockNo(bl)}</span><TxLink h={h} label="view" /></div>
+          {steps.map(([a, b, bl, h, q], i) => (
+            <div className="tlr" key={i}><b>{a}</b><span>{b}</span><span className="mono">{blockNo(bl)}</span><TxLink h={h} label="view" />{q}</div>
           ))}
         </div>
       </section>
@@ -71,7 +74,7 @@ export default function BatchPage({ id }: { id: number }) {
         <Curve rec={r.settle ? r : null} />
         <div className="kv">
           {r.settle && <div><span>Market maker net</span><span className="mono">{Number(r.settle.makerBase) < 0 ? "sold" : "bought"} {eth(String(Math.abs(Number(r.settle.makerBase))), 6)} fETH</span></div>}
-          <div><span>Rebalance on x/amm</span><span>{r.hedge?.hash ? <TxLink h={r.hedge.hash} label="view" /> : <span className="dim">{r.hedge?.skipped ? "not needed, net too small" : r.hedge?.failed ? "failed, see the build log" : "none"}</span>}</span></div>
+          <div><span>Rebalance on x/amm pool 3</span><span>{r.hedge?.hash ? <TxLink h={r.hedge.hash} label="view" /> : <span className="dim">{r.hedge?.skipped ? "not needed, net too small" : r.hedge?.failed ? "failed, see the build log" : "none"}</span>}</span></div>
           <div><span>Market maker, 30 blocks later</span><span className="mono">{r.markout ? `${Number(r.markout.afterHedge) >= 0 ? "+" : "−"}${usd(String(Math.abs(Number(r.markout.afterHedge))), 4)} fUSD` : <span className="dim">{r.settled ? "waiting for 30 blocks" : "none"}</span>}</span></div>
         </div>
       </section>

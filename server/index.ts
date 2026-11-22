@@ -53,11 +53,12 @@ const bad = (c: any, msg: string, code = 400) => c.json({ error: msg }, code);
 
 // Posting an order costs the operator gas, so each network gets a modest allowance.
 const posts = new Map<string, number[]>();
+const POSTS_PER_MIN = Number(process.env.POSTS_PER_MIN ?? 6), POSTS_PER_DAY = Number(process.env.POSTS_PER_DAY ?? 120);
 function postLimited(c: any): string | null {
   const k = ip(c), now = Date.now();
   const recent = (posts.get(k) ?? []).filter((t) => now - t < 86_400_000);
-  if (recent.filter((t) => now - t < 60_000).length >= 6) return "too many orders in the last minute; wait a moment";
-  if (recent.length >= 120) return "daily order limit reached for this network";
+  if (recent.filter((t) => now - t < 60_000).length >= POSTS_PER_MIN) return "too many orders in the last minute; wait a moment";
+  if (recent.length >= POSTS_PER_DAY) return "daily order limit reached for this network";
   recent.push(now); posts.set(k, recent);
   return null;
 }
@@ -160,14 +161,25 @@ app.post("/api/limit", async (c) => {
 app.get("/api/batches", (c) => c.json({
   live: [...loop.records].reverse(),
   testRuns: loop.history,
-  versions: { current: { contract: settlement, version: dep.version }, previous: dep.v1 ? { contract: dep.v1.settlement } : null },
+  earlier: [...loop.earlier].reverse(),
+  versions: {
+    current: { contract: settlement, version: dep.version ?? 2 },
+    previous: dep.v1 ? { contract: dep.v1.settlement } : null,
+    all: [
+      { version: dep.version ?? 2, contract: settlement, note: "current" },
+      ...(dep.v2 ? [{ version: 2, contract: dep.v2.settlement, note: "quote curve; orders signed without QoreChain's message domain" }] : []),
+      ...(dep.v1 ? [{ version: 1, contract: dep.v1.settlement, note: "flat band quote (the first miss)" }] : []),
+    ],
+  },
 }));
 // The first version's test runs (flat quote, before the curve fix), read only, for the proof page.
 const V1 = existsSync("deployments/batches.json") ? JSON.parse(readFileSync("deployments/batches.json", "utf8")) : [];
 app.get("/api/batches/v1", (c) => c.json(V1));
 app.get("/api/batch/:id", (c) => {
   const id = Number(c.req.param("id"));
-  const r = loop.records.find((x) => x.batch === id) ?? loop.history.find((x) => x.batch === id);
+  const v = Number(c.req.query("v") ?? dep.version ?? 2);
+  const older = () => loop.earlier.find((x) => x.batch === id) ?? loop.history.find((x) => x.batch === id);
+  const r = v === (dep.version ?? 2) ? (loop.records.find((x) => x.batch === id) ?? (c.req.query("v") ? undefined : older())) : older();
   return r ? c.json(r) : bad(c, "unknown batch", 404);
 });
 
