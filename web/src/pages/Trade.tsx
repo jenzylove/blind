@@ -729,7 +729,7 @@ function orderStatus(t: Tracked | undefined, live: BatchRec[] | null, s: State |
     return f ? got(f) : { text: "Not filled. Nothing moved", tone: "neg" };
   }
   if (s && s.batch.id === t.batch && s.phase !== "waiting") {
-    const m: Record<string, string> = { intake: "Sealed, waiting for the batch to close", quoting: "Locking the price", opening: "Price locked", settling: "Settling", hedging: "Settled" };
+    const m: Record<string, string> = { intake: "Sealed, waiting for the batch to close", quoting: "Locking the price", revealing: "Price locked, revealing your order", settling: "Settling", hedging: "Settled" };
     return { text: m[s.phase] ?? "Sealed", tone: "on" };
   }
   return { text: "Sealed", tone: "on" };

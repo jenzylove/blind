@@ -59,9 +59,10 @@ export function batchStatus(s: State | null, down: boolean, now: number): { text
       return left === null ? { text: "Taking sealed orders", on: true } : { text: "Next settlement in", time: `${Math.floor(left / 60)}:${two(left % 60)}`, on: true };
     }
     case "quoting": return { text: "Locking the price", on: true };
-    case "opening": return { text: "Price locked", on: true };
+    case "revealing": return { text: "Price locked, orders revealing", on: true };
     case "settling": return { text: "Settling", on: true };
     case "hedging": return { text: "Settled", on: true };
+    default: return { text: "", on: false };
   }
 }
 

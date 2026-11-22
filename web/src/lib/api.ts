@@ -1,5 +1,5 @@
 // The server's API, typed. Every number on screen comes from here.
-export type Phase = "waiting" | "intake" | "quoting" | "opening" | "settling" | "hedging";
+export type Phase = "waiting" | "intake" | "quoting" | "revealing" | "settling" | "hedging";
 
 export interface State {
   chainId: string; evmChainId: number; evmRpc: string; contract: string;

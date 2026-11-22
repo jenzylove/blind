@@ -110,11 +110,11 @@ export function latestSettled(b: { live: BatchRec[]; testRuns: BatchRec[] } | nu
 // ------------------------------------------------------------------ phases
 export const STEPS = ["Seal", "Post", "Commit price", "Open", "Settle"] as const;
 export function phaseStep(p: Phase): number {
-  return { waiting: -1, intake: 1, quoting: 2, opening: 3, settling: 4, hedging: 5 }[p];
+  return ({ waiting: -1, intake: 1, quoting: 2, revealing: 3, settling: 4, hedging: 5 } as Record<string, number>)[p] ?? -1;
 }
 /** Closed while orders are sealed, opening at the reveal, open once settled. */
 export function phaseBlind(p: Phase | undefined): BlindState {
-  if (p === "opening" || p === "settling") return "opening";
+  if (p === "revealing" || p === "settling") return "opening";
   if (p === "hedging" || p === "waiting") return "open";
   return "closed";
 }
@@ -126,7 +126,7 @@ export function phaseLine(s: State, now: number) {
       return left !== null ? `Batch ${s.batch.id} is taking sealed orders. Closes in ${left} s.` : `Batch ${s.batch.id} is taking sealed orders.`;
     }
     case "quoting": return `Batch ${s.batch.id} is closed. The market maker is locking its price on chain.`;
-    case "opening": return `Batch ${s.batch.id}: the price is on chain. The blinds are opening.`;
+    case "revealing": return `Batch ${s.batch.id}: the price is locked on chain. Each order is being revealed by its owner.`;
     case "settling": return `Batch ${s.batch.id}: orders opened from chain data. Settling at one price.`;
     case "hedging": return `Batch ${s.batch.id} settled. The market maker is rebalancing on x/amm.`;
   }
