@@ -73,7 +73,7 @@ export class Engine {
       relayer: this.settler.cosmos, chainId: NET.chainId, account: this.settler.cosmos,
       to: this.settlement, value: "0", data: hexToBytes(data), gasLimit, nonce, digestVersion: digestVersion as any,
     });
-    const cosmosHash = await broadcast(this.settler, "hybrid", [msg], String(gasLimit + 250_000));
+    const cosmosHash = await broadcast(this.settler, "hybrid", [msg], String(gasLimit + 600_000));
     const r = await waitTx(cosmosHash);
     if (r.code) throw new Error(`${functionName} refused: ${String(r.log).slice(0, 200)} (${cosmosHash})`);
     const ev = (t: string) => r.events.filter((e: any) => e.type === t);
