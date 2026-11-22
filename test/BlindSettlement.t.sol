@@ -30,7 +30,7 @@ contract Token {
     constructor(string memory s) { symbol = s; }
     function mint(address to, uint256 a) external { balanceOf[to] += a; }
     function approve(address s, uint256 a) external returns (bool) { allowance[msg.sender][s] = a; return true; }
-    function transfer(address to, uint256 a) external returns (bool) { return _move(msg.sender, to, a); }
+    function transfer(address to, uint256 a) external virtual returns (bool) { return _move(msg.sender, to, a); }
     function transferFrom(address f, address to, uint256 a) external returns (bool) {
         require(allowance[f][msg.sender] >= a, "allowance");
         allowance[f][msg.sender] -= a;
@@ -39,6 +39,21 @@ contract Token {
     function _move(address f, address to, uint256 a) internal returns (bool) {
         require(balanceOf[f] >= a, "balance");
         balanceOf[f] -= a; balanceOf[to] += a; return true;
+    }
+}
+
+/// A hostile token: when the settlement pays it out, it tries to re-enter withdraw with a valid
+/// agent signature. Used to answer the QCAI reentrancy finding.
+contract EvilToken is Token {
+    address public target;
+    bytes public data;
+    bool public tried;
+    bool public reentryOk;
+    constructor() Token("EVIL") {}
+    function arm(address t, bytes calldata d) external { target = t; data = d; }
+    function transfer(address to, uint256 a) external override returns (bool) {
+        if (target != address(0) && !tried) { tried = true; (reentryOk,) = target.call(data); }
+        return _move(msg.sender, to, a);
     }
 }
 
@@ -466,5 +481,65 @@ contract BlindSettlementTest is Test {
         vm.prank(settler);
         vm.expectRevert(BlindSettlement.BadPhase.selector);
         s.settle(id, _one(o), sigs);
+    }
+
+    // ------------------------------------------------------------ QCAI audit answers (docs/audit)
+
+    /// QCAI #1: a token that re-enters during settle's payout cannot withdraw inventory.
+    function test_qcai_reentryDuringSettleIsBlocked() public {
+        EvilToken evil = new EvilToken();
+        BlindSettlement s2 = new BlindSettlement(IERC20(address(evil)), IERC20(address(fUSD)), agent, settler, treasury, 100);
+        evil.mint(address(s2), 1e18);
+        vm.prank(alice);
+        fUSD.approve(address(s2), type(uint256).max);
+        // A valid agent signature for withdrawing everything: the only thing missing is a fresh call.
+        bytes memory wsig = _sign(agent, s2.withdrawMessage(address(evil), 1e18, 0));
+        evil.arm(address(s2), abi.encodeCall(BlindSettlement.withdraw, (address(evil), 1e18, wsig)));
+
+        vm.prank(settler);
+        uint64 id = s2.create(keccak256(abi.encodePacked(SK)));
+        BlindSettlement.Curve memory c = _flat(1e18);
+        uint64 exp = uint64(block.number + 50);
+        s2.commit(id, c, exp, _sign(agent, s2.quoteMessage(id, c, exp)));
+        vm.roll(block.number + 1);
+        s2.open(id, abi.encodePacked(SK));
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sign(alice, s2.orderMessage(o));
+        vm.prank(settler);
+        s2.settle(id, _one(o), sigs);
+
+        assertTrue(evil.tried(), "the token did try to re-enter");
+        assertFalse(evil.reentryOk(), "re-entry must fail");
+        assertEq(s2.withdrawNonce(), 0, "no withdraw happened");
+        assertEq(evil.balanceOf(treasury), 0);
+    }
+
+    /// QCAI #3: clearingPrice never overflows for any curve and totals far beyond real use:
+    /// prices up to 2^48 (about 280 million fUSD per fETH), maxNet and totals up to 2^72
+    /// (4,700 fETH, or 4.7 quadrillion fUSD). Testnet batches use prices near 2^32 and
+    /// maxNet near 2^52. Outside the range, checked arithmetic reverts; it never returns a wrong price.
+    function testFuzz_qcai_solveHasNoOverflowInRange(uint48 bidMax, uint48 w1, uint48 w2, uint48 w3, uint72 maxNet, uint72 q, uint72 b) public view {
+        uint256 lo = bound(bidMax, 1, type(uint48).max / 4);
+        uint256 bd = lo + bound(w1, 0, type(uint48).max / 4);
+        uint256 ak = bd + 1 + bound(w2, 0, type(uint48).max / 4);
+        uint256 hi = ak + bound(w3, 0, type(uint48).max / 4);
+        BlindSettlement.Curve memory c = BlindSettlement.Curve(uint128(bd), uint128(ak), uint128(lo), uint128(hi), uint128(bound(maxNet, 1, type(uint72).max)));
+        uint256 p = s.clearingPrice(c, q, b);
+        if (q > 0 || b > 0) {
+            assertGe(p, lo);
+            assertLe(p, hi);
+        }
+    }
+
+    /// QCAI #5: the order loop is bounded. 33 orders are refused before any work.
+    function test_qcai_moreThan32OrdersRefused() public {
+        uint64 id = _ready(1e18);
+        BlindSettlement.Order[] memory os = new BlindSettlement.Order[](33);
+        bytes[] memory sigs = new bytes[](33);
+        for (uint256 i; i < 33; ++i) { os[i] = _order(alice, id, true, 1e6, 0); os[i].nonce = i; sigs[i] = _sigOf(os[i]); }
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.TooBig.selector);
+        s.settle(id, os, sigs);
     }
 }

@@ -2,9 +2,18 @@
 
 Trade on QoreChain without bots seeing your order first.
 
-Work in progress for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum AI Agents).
+Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum AI Agents).
 
-## Live on testnet now
+**Try it:** https://blind.jdollar.site. No wallet needed: one button makes a test account in your browser, then place a sealed swap and watch the batch settle.
+
+| | |
+|---|---|
+| Settlement contract | [`0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf`](https://explore.qore.network/address/0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf) on `qorechain-diana` |
+| Every batch, misses included | https://blind.jdollar.site/proof |
+| QCAI audit and our answer to each finding | [docs/audit/QCAI.md](docs/audit/QCAI.md) |
+| Build log | [docs/BUILD_LOG.md](docs/BUILD_LOG.md) |
+
+## Q-Day Drill
 
 `DrillVault` is Blind's settlement core, deployed on `qorechain-diana` for the Q-Day Drill.
 
