@@ -14,6 +14,7 @@ import { fetchSpendingRules, fetchAuthenticators } from "@qorechain/sdk";
 import { toHex } from "viem";
 import { makeQuote, clearingPrice, cpOut, SCALE } from "../src/agent/policy.ts";
 import { BatchLoop } from "./loop.ts";
+import { SandwichBot } from "./bot.ts";
 
 const [op, agent, hedger] = await Promise.all([account("OPERATOR"), account("AGENT"), account("HEDGER")]);
 const dep = state.read();
@@ -28,9 +29,16 @@ if (!STANDING_SEED) throw new Error("STANDING_SEED (32 bytes hex) is required");
 const loop = new BatchLoop(engine, STANDING_SEED);
 setInterval(() => loop.markouts().catch(() => undefined), 30_000);
 
+// The public-swap bot: a separate account that reads only the public mempool (server/bot.ts).
+const botAcc = await account("BOT" as any).catch(() => null);
+const bot = botAcc ? new SandwichBot(botAcc, `${process.env.DATA_DIR ?? "data"}/bot.json`) : null;
+if (bot && process.env.BOT !== "off") bot.start().catch((e) => console.log(`[bot] failed to start: ${e.message}`));
+
 const FUND = {
-  uqor: process.env.FUND_UQOR ?? "350000",                  // 0.35 QOR: key registration, one window, two approvals
+  uqor: process.env.FUND_UQOR ?? "450000",                  // 0.45 QOR: key registration, one window, two approvals, one public swap
   fUSD: process.env.FUND_FUSD ?? "15000000",                // 15 fUSD
+  publicFUSD: process.env.FUND_PUBLIC_FUSD ?? "6000000",    // 6 fUSD and 0.002 fETH as bank coin, for the public x/amm lane
+  publicFETH: process.env.FUND_PUBLIC_FETH ?? "2000000000000000",
   fETH: process.env.FUND_FETH ?? "5000000000000000",        // 0.005 fETH
   perDay: Number(process.env.FUND_PER_DAY ?? 150),
 };
@@ -69,6 +77,14 @@ app.get("/api/state", async (c) => {
     pool: { id: 3, base: pool.base.toString(), quote: pool.quote.toString(), mid: ((pool.quote * SCALE) / pool.base).toString() },
     standingOpen: loop.standing.length,
   });
+});
+
+// ------------------------------------------------------------------ the public-swap bot
+app.get("/api/bot", (c) => (bot ? c.json(bot.stats()) : bad(c, "bot not running", 503)));
+app.get("/api/bot/attempt/:hash", (c) => {
+  if (!bot) return bad(c, "bot not running", 503);
+  const a = bot.find(c.req.param("hash"));
+  return a ? c.json(a) : bad(c, "the bot has not seen this transaction (yet)", 404);
 });
 
 /** Explorer links: the explorer indexes Cosmos hashes, so resolve an EVM hash first, then redirect. */
@@ -172,7 +188,9 @@ app.post("/api/fund", async (c) => {
   try {
     // Same operator account as the settler: share the loop's queue so sequence numbers never collide.
     const r = await loop.serial(() => send(op, "hybrid", [
-      { typeUrl: "/cosmos.bank.v1beta1.MsgSend", value: { fromAddress: op.cosmos, toAddress: cosmos, amount: [{ denom: "uqor", amount: FUND.uqor }] } },
+      { typeUrl: "/cosmos.bank.v1beta1.MsgSend", value: { fromAddress: op.cosmos, toAddress: cosmos, amount: [
+        { denom: denom("fETH"), amount: FUND.publicFETH }, { denom: denom("fUSD"), amount: FUND.publicFUSD }, { denom: "uqor", amount: FUND.uqor },
+      ].sort((x, y) => x.denom.localeCompare(y.denom)) } },
       { typeUrl: CONVERT_COIN, value: { coin: { denom: denom("fUSD"), amount: FUND.fUSD }, receiver: evm, sender: op.cosmos } },
       { typeUrl: CONVERT_COIN, value: { coin: { denom: denom("fETH"), amount: FUND.fETH }, receiver: evm, sender: op.cosmos } },
     ], `relayer: fund burner ${cosmos}`, "1400000"));

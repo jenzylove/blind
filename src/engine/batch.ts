@@ -208,7 +208,7 @@ export class Engine {
     const expected = buyBase ? abs : cpOutSafe(pool.base, pool.quote, abs);
     try {
       const r = await send(this.hedger, "hybrid", [{ typeUrl: "/qorechain.amm.v1.MsgSwapExactIn", value: {
-        sender: this.hedger.cosmos, poolId: POOL_ID, tokenIn, denomOut: buyBase ? denom("fETH") : denom("fUSD"), minOut: ((expected * 98n) / 100n).toString(),
+        sender: this.hedger.cosmos, poolId: POOL_ID, tokenIn, denomOut: buyBase ? denom("fETH") : denom("fUSD"), minOut: ((expected * 995n) / 1000n).toString(), // tight: leaves a sandwich bot nothing worth taking
       } }], `hedge: ${buyBase ? "buy" : "sell"} ${Number(abs) / 1e18} fETH on x/amm`);
       const after = await balances(this.hedger.cosmos);
       const d = (k: string) => (BigInt(after[k] ?? 0) - BigInt(before[k] ?? 0)).toString();

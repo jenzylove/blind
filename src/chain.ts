@@ -29,7 +29,7 @@ export function readEnv(path = ".env") {
   }
   return env;
 }
-export const ROLES = ["OPERATOR", "AGENT", "HEDGER", "USER1", "USER2"] as const;
+export const ROLES = ["OPERATOR", "AGENT", "HEDGER", "BOT", "USER1", "USER2"] as const;
 // Mnemonics live in a git-ignored env file outside the repo (BLIND_ENV), testnet only.
 const ENV_PATH = process.env.BLIND_ENV ?? ".env";
 export type Role = (typeof ROLES)[number];
@@ -65,7 +65,7 @@ const MsgConvertCoin = {
   fromPartial(m: any) { return m; },
 };
 export const CONVERT_COIN = "/cosmos.evm.erc20.v1.MsgConvertCoin";
-const registry = qorechainRegistry([[CONVERT_COIN, MsgConvertCoin as any]]);
+export const registry = qorechainRegistry([[CONVERT_COIN, MsgConvertCoin as any]]);
 
 async function seq(addr: string) {
   const r = await fetch(`${NET.rest}/cosmos/auth/v1beta1/accounts/${addr}`);

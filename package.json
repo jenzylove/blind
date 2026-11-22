@@ -11,6 +11,7 @@
     "build:web": "npm --prefix web run build"
   },
   "dependencies": {
+    "@cosmjs/proto-signing": "^0.39.0",
     "@cosmjs/stargate": "^0.39.0",
     "@hono/node-server": "^1.13.0",
     "@noble/curves": "^2.4.0",
