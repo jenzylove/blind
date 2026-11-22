@@ -214,17 +214,19 @@ function Nav({ path }: { path: string }) {
       <div className="navin">
         <Link to="/" className="brand" aria-label="Blind home"><Logo /></Link>
         <div className="links">
-          <Link to="/#how" className="l hideS">How a batch works</Link>
+          <Link to="/#how" className="l hideS">How it works</Link>
           <Link to="/proof" className={`l ${path.startsWith("/proof") || path.startsWith("/batch") ? "on" : ""}`}>Proof</Link>
           <a href={REPO} target="_blank" rel="noreferrer" className="l hideS">GitHub</a>
         </div>
         <div className="right">
-          <span className="live" title="Live batch status">
-            <span className={`dot ${open ? "on" : ""}`} />
-            <span className="hideS">{s ? (open ? `Batch ${s.batch.id} live` : "Next batch ready") : "Connecting"}</span>
-          </span>
+          {path !== "/" && (
+            <span className="live" title="Live batch status">
+              <span className={`dot ${open ? "on" : ""}`} />
+              <span className="hideS">{s ? (open ? `Batch ${s.batch.id} live` : "Next batch ready") : "Connecting"}</span>
+            </span>
+          )}
           <ThemeToggle />
-          {path !== "/app" && <Link to="/app" className="navcta">Open the app</Link>}
+          {path !== "/app" && <Link to="/app" className="navcta">Try it</Link>}
         </div>
       </div>
     </nav>
@@ -245,8 +247,8 @@ function Footer() {
             <h4>Product</h4>
             <Link to="/app">Place a sealed swap</Link>
             <Link to="/proof">Every batch</Link>
-            <Link to="/#how">How a batch works</Link>
-            <Link to="/#qorechain">Built on QoreChain</Link>
+            <Link to="/#how">How it works</Link>
+            <Link to="/proof#how">Built on QoreChain</Link>
             <Link to="/#faq">Questions</Link>
           </div>
           <div>

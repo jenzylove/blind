@@ -497,3 +497,77 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
   .tlr .qc { grid-column: 1 / -1; grid-row: 3; margin: 0; }
   .it .qc { grid-column: 2; margin: 0; }
 }
+
+/* ---------------------------------------------------------- landing v6: short, calm */
+/* The WebGL blind writes its CSS variables directly; transitions on them would restart every write. */
+.blind.gl .blind-win, .blind.gl .blind-in { transition: none; }
+.strip.three { grid-template-columns: repeat(3, 1fr); font-family: var(--sans); font-size: 14px; }
+.herocap { margin: 12px 0 0; font-size: 14px; color: var(--fg3); }
+.quiet { margin: 14px 0 0; font-size: 14px; color: var(--fg3); }
+.quiet a { color: var(--fg2); border-bottom: 1px solid var(--line2); }
+.quiet a:hover { color: var(--fg); }
+.duo { display: grid; gap: 64px; max-width: 760px; }
+.duoh { font-size: 22px; letter-spacing: -.01em; margin: 0 0 16px; }
+.atkp p { margin: 0; font-size: 19px; line-height: 1.5; font-weight: 500; max-width: 32em; }
+.atkn { margin-top: 18px; }
+.atkn > div { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 12px 0; border-top: 1px solid rgba(70,52,10,.16); }
+.atkn span { color: #6b5a2c; font-size: 15px; }
+.atkn b { font-weight: 700; font-size: 18px; }
+.atkn .lost b { font-weight: 900; font-size: 30px; letter-spacing: -.02em; color: #8a2c1f; }
+/* what a bot reads: real sealed bytes behind closed slats, fading out */
+.sealedhex { position: relative; border-radius: 3px; padding: 26px 30px; min-height: 150px; overflow: hidden;
+  background: repeating-linear-gradient(180deg, #2a2b30 0 26px, #1b1c20 26px 28px); box-shadow: 0 0 0 1px rgba(255,231,163,.12);
+  font-family: var(--mono); font-size: 15px; line-height: 28px; color: rgba(255,231,163,.62); letter-spacing: .04em; white-space: nowrap;
+  -webkit-mask-image: linear-gradient(180deg, #000 30%, transparent 100%); mask-image: linear-gradient(180deg, #000 30%, transparent 100%); }
+.sealedhex.empty { display: grid; place-items: center; -webkit-mask-image: none; mask-image: none; }
+.sealedhex > div { overflow: hidden; text-overflow: clip; }
+/* small CSS blinds for the three steps */
+.slats { position: relative; display: block; width: 112px; height: 84px; border-radius: 2px; overflow: hidden; border-top: 7px solid #1b1c20;
+  background: linear-gradient(165deg, #fff7dc 0%, #fde9ab 45%, #f1cf78 100%); box-shadow: 0 0 0 1px rgba(255,231,163,.2); }
+.slats i { display: block; height: 12.83px; background: linear-gradient(180deg, #34353b, #222328); border-bottom: 1px solid #16171a; transform-origin: center; }
+.slats.locked i { transform: scaleY(.45); }
+.slats.open { background: linear-gradient(165deg, #fff7dc 0%, #fde9ab 45%, #f1cf78 100%); }
+.slats.open i { height: 3px; border-bottom-width: 0; margin-bottom: 1px; }
+.slats.big { width: 140px; height: 96px; box-shadow: none; }
+.how3 { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); max-width: 1120px; }
+.how3 li { padding: 32px 32px 8px 0; }
+.how3 li + li { padding-left: 32px; border-left: 1px solid var(--line); }
+.how3 .hn { display: block; margin-top: 22px; font-weight: 900; font-size: 15px; color: var(--accent); }
+.how3 p { margin: 6px 0 0; font-size: 21px; line-height: 1.4; font-weight: 600; letter-spacing: -.01em; max-width: 15em; }
+#how .quiet { margin-top: 36px; }
+.figs.big b { font-size: 52px; }
+.figs b.neg { color: var(--down); }
+#record .figs { margin-bottom: 28px; }
+#record .figs span { font-size: 15px; color: var(--fg2); max-width: 20em; }
+#problem .sechead, #how .sechead, #record .sechead { margin-bottom: 40px; }
+.lastsec { padding-bottom: 60px; }
+/* proof page: the tech, moved from the landing */
+.vfix.wide { max-width: 1120px; margin-top: 96px; }
+.vfix .built, .vfix .limits { margin-top: 28px; }
+.techsteps { list-style: none; margin: 24px 0 0; padding: 0; border-top: 1px solid var(--line); }
+.techsteps li { padding: 22px 0; border-bottom: 1px solid var(--line); }
+.techsteps .k { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 12px; color: var(--fg3); }
+.techsteps .k span:first-child { color: var(--accent); }
+.techsteps h3 { font-size: 22px; margin-top: 8px; }
+.techsteps p { color: var(--fg2); margin: 8px 0 0; max-width: 44em; }
+@media (max-width: 900px) {
+  .how3 { grid-template-columns: 1fr; }
+  .how3 li, .how3 li + li { padding: 26px 0; border-left: 0; display: grid; grid-template-columns: 96px 1fr; gap: 0 20px; align-items: center; }
+  .how3 li + li { border-top: 1px solid var(--line); }
+  .how3 .slats { width: 96px; height: 72px; grid-row: 1 / 3; }
+  .how3 .slats i { height: 10.83px; }
+  .how3 .slats.open i { height: 3px; }
+  .how3 .hn { margin: 0; align-self: end; }
+  .how3 p { align-self: start; font-size: 18px; }
+}
+@media (max-width: 720px) {
+  .duo { gap: 48px; }
+  .atkp p { font-size: 16px; }
+  .atkn .lost b { font-size: 24px; }
+  .sealedhex { font-size: 12.5px; padding: 18px 16px; line-height: 26px; }
+  .figs.big b { font-size: 34px; }
+  .figs.three > div:nth-child(3) { grid-column: 1 / 3; }
+  .strip.three { font-size: 12px; }
+}
+#problem, #how, #record, #faq { padding-top: 104px; }
+@media (max-width: 720px) { #problem, #how, #record, #faq { padding-top: 80px; } }

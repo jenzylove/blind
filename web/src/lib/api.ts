@@ -28,6 +28,8 @@ export interface Batches {
   live: BatchRec[]; testRuns: BatchRec[]; earlier?: BatchRec[];
   versions: { current: { contract: string; version: number }; previous: { contract: string } | null };
 }
+/** The first 80 bytes (160 hex chars) of the newest sealed order, read back from its Sealed event. */
+export interface Envelope { batch: number; version: number; txHash: string; bytes: number; hexHead: string }
 export interface Quote { side: string; amountIn: string; mid: string; blindIfAlone: string; withinMakerSize: boolean; plainAmm: string | null; ammRefused: boolean }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
@@ -44,6 +46,8 @@ export const api = {
   batchesV1: () => j<BatchRec[]>("/api/batches/v1"),
   agent: () => j<AgentInfo>("/api/agent"),
   bot: () => j<BotStats>("/api/bot"),
+  /** The first bytes of the newest sealed order posted on chain (404 until there is one). */
+  envelope: () => j<Envelope>("/api/envelope/latest"),
   /** The bot's record of one public swap, or null until the bot has seen it. Read from /api/bot so a miss is not a 404. */
   botAttempt: async (victimHash: string): Promise<Attempt | null> => {
     const b = await j<BotStats>("/api/bot");

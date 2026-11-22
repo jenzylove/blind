@@ -3,6 +3,7 @@ import { api, batchPath, CURRENT_VERSION, type BatchRec } from "../lib/api";
 import { price, blockNo, summarize, pct, inLabel, outLabel, usd, ago, type Summary } from "../lib/fmt";
 import { Edge, usePoll, navigate, Link, SlatGlyph, attemptIn, attemptOutcome, AttemptLinks, Qc } from "../ui";
 import { AGENT_SPIKE } from "../lib/qore";
+import ProofHow from "./ProofHow";
 
 // Function selectors of BlindSettlement, to show the rule in words.
 const SELECTORS: Record<string, string> = { "0x7368a8ce": "create", "0x5f274211": "post", "0x6225710f": "commit", "0x95329838": "open", "0x75f97094": "settle" };
@@ -123,6 +124,8 @@ export default function Proof() {
       </table>
       {b && !rows.length && <div className="empty">{filter === "app" ? "No batches from the app yet. " : "No batches yet. "}<Link to="/app">Place the first sealed swap.</Link></div>}
       {!b && !err && <div className="empty">Reading batches from the server.</div>}
+
+      <ProofHow b={b} />
     </div>
   );
 }

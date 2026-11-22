@@ -1,87 +1,44 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, batchPath, type BatchRec, type Batches, type BotStats } from "../lib/api";
-import { short, blockNo, summarize, pct, inLabel, price, ago } from "../lib/fmt";
-import { Link, Edge, usePoll, useReveal, navigate, latestSettled, SlatGlyph, STEPS, attemptIn, attemptOut, AttemptLinks, StepQc, Qc, useLive } from "../ui";
-import { viaLinkedKey, COMMIT_PLAIN, txUrl, CONTRACT_URL, RELAY_SRC, LIMIT_SRC, QORESCAN_URL, QCAI_URL, STEP_TECH } from "../lib/qore";
+import { api, type BatchRec, type Batches, type BotStats, type Attempt, type Envelope } from "../lib/api";
+import { summarize, pct, inLabel, outLabel, price } from "../lib/fmt";
+import { Link, Edge, usePoll, useReveal, latestSettled, attemptOut } from "../ui";
+import { txUrl } from "../lib/qore";
 import Blind, { type BlindState } from "../Blind";
-import BatchPanel from "../BatchPanel";
 
 export default function Landing() {
   const { v: b } = usePoll(api.batches, 15000);
-  const rec = useMemo(() => latestSettled(b), [b]);
   const { v: bot } = usePoll(api.bot, 20000);
+  const { v: env, err: envErr } = usePoll(api.envelope, 60000);
+  const rec = useMemo(() => heroRec(b), [b]);
   useReveal();
   return (
     <>
       <Hero rec={rec} />
-      <Problem rec={rec} bot={bot} />
-      <How rec={rec} />
-      <Built rec={rec} />
-      <ProofSec b={b} />
-      <Limits />
+      <Problem bot={bot} env={env} envMissing={envErr && !env} />
+      <How />
+      <Record b={b} bot={bot} />
       <Faq />
-      <section className="closing wrap rv">
-        <h2>Your next swap,<br /><em>behind the blinds.</em></h2>
-        <div className="ctas">
-          <Link to="/app" className="btn day">Place a sealed swap</Link>
-          <Link to="/proof" className="btn line">See every batch</Link>
-        </div>
-        <p className="dim small">No wallet needed. One button makes a test account in this browser.</p>
-      </section>
     </>
   );
 }
 
-const blindFor = (step: number): BlindState => (step >= 4 ? "open" : step === 3 ? "opening" : "closed");
-const hashesOf = (rec: BatchRec) => [undefined, rec.posts?.[0]?.hash ?? rec.create?.hash, rec.commit?.hash, rec.open?.hash, rec.settle?.hash] as (string | undefined)[];
-const blocksOf = (rec: BatchRec) => [null, rec.posts?.[0]?.block ?? rec.create!.block, rec.commit!.block, rec.open!.block, rec.settle!.block] as (number | null)[];
-
-// ------------------------------------------------------------------ hero
-const T = [0, 1200, 2300, 3400, 5600, 11600, 13000]; // Seal, Post, Commit, Open, Settle, lowering; last = loop
-function useReduced() {
-  const [r] = useState(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
-  return r;
-}
-function Hero({ rec }: { rec: BatchRec | null }) {
-  const reduced = useReduced();
-  const [step, setStep] = useState(reduced ? 4 : 0);
-  useEffect(() => {
-    if (reduced || !rec) return;
-    const start = performance.now();
-    const t = setInterval(() => {
-      const ms = (performance.now() - start) % T[6];
-      setStep(T.findIndex((x, i) => ms >= x && ms < T[i + 1]));
-    }, 150);
-    return () => clearInterval(t);
-  }, [reduced, rec]);
-  return (
-    <section className="hero">
-      <div className="wrap herogrid">
-        <div className="herotext">
-          <h1>Trade behind the blinds. <span>They open only after the price is locked.</span></h1>
-          <p className="sub">Your swap is sealed in your browser, so bots can't see it. The market maker locks its price on chain first. Then the blinds open, and everyone in the batch gets that same price.</p>
-          <div className="ctas">
-            <Link to="/app" className="btn day">Place a sealed swap</Link>
-            {rec && <Link to={batchPath(rec)} className="btn line">Watch batch {rec.batch}</Link>}
-          </div>
-        </div>
-        <div className="herowin" data-step={step}>
-          <Blind className="big" state={step === 5 ? "closed" : blindFor(step)} label={rec ? `Batch ${rec.batch}, replayed step by step` : "Latest batch"}>
-            <BatchPanel rec={rec} />
-          </Blind>
-          <ol className="strip" aria-label="Batch steps">
-            {STEPS.map((n, i) => (
-              <li key={n} className={i === step ? "on" : ""}><span>{n}</span></li>
-            ))}
-          </ol>
-          <p className="cap">{rec ? `Batch ${rec.batch}, settled on QoreChain testnet at block ${blockNo(rec.settle!.block)}. Real data, read live${rec.live ? "" : " (our test traders)"}.` : "Reading the latest batch from QoreChain testnet."}</p>
-        </div>
-      </div>
-    </section>
-  );
+/** The newest settled swap from the app, else the newest settled batch at all. */
+function heroRec(b: Batches | null): BatchRec | null {
+  const app = b?.live.find((r) => r.settled && r.fills?.length && r.endedAt);
+  return app ?? latestSettled(b);
 }
 
-// ------------------------------------------------------------------ 01 problem
+/** "4 minutes ago", in words. */
+function agoWords(iso?: string): string {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  const n = (v: number, u: string) => `${v} ${u}${v === 1 ? "" : "s"} ago`;
+  if (s < 60) return "just now";
+  if (s < 3600) return n(Math.round(s / 60), "minute");
+  if (s < 86400) return n(Math.round(s / 3600), "hour");
+  return n(Math.round(s / 86400), "day");
+}
+
 function SecHead({ n, title, lead, id }: { n: string; title: string; lead?: string; id?: string }) {
   return (
     <div className="sechead rv" id={id}>
@@ -92,204 +49,205 @@ function SecHead({ n, title, lead, id }: { n: string; title: string; lead?: stri
   );
 }
 
-function Problem({ rec, bot }: { rec: BatchRec | null; bot: BotStats | null }) {
-  const a = bot?.recent.find((x) => x.order === "bot first" && x.victimLossBps != null && x.victimGot && x.victimWouldGet) ?? null;
-  const bytes = rec?.posts?.find((p) => p.bytes)?.bytes;
-  const lines: [string, string][] = a ? [
-    ["A public swap", attemptIn(a)],
-    ["The bot bought ahead", a.frontHeight === a.victimHeight ? `same block, ${blockNo(a.victimHeight)}` : `block ${blockNo(a.frontHeight)}`],
-    ["The swapper got", attemptOut(a, a.victimGot!)],
-    ["Without the bot", attemptOut(a, a.victimWouldGet!)],
-    ["Lost to the bot", `${(a.victimLossBps! / 100).toFixed(2)}%`],
-  ] : [];
-  const rows = (
-    <div className="ord">
-      {a ? lines.map(([k, v]) => <div key={k}><span>{k}</span><b>{v}</b></div>)
-        : <div><span>{bot ? "No attack recorded yet. Send a public swap from the app and it lands here." : "Reading the bot's latest attack"}</span></div>}
-    </div>
-  );
-  return (
-    <section className="sec wrap" id="problem">
-      <SecHead n="01" title="On a normal chain, your swap is public before it lands" lead="A bot reads its size and direction while it waits, buys first, and sells right after you. We run one on QoreChain testnet against every public swap on our pool. This is its latest real attack." />
-      <div className="pair rv">
-        <div className="pairrow">
-          <p className="pk">What the bot did to a public swap{a ? `, ${ago(a.at)}` : ""}</p>
-          <Blind state="open" flat className="small">{rows}</Blind>
-          {a && <p className="pn"><AttemptLinks a={a} /> <Link to="/proof#bot">The bot's full record</Link></p>}
-        </div>
-        <div className="pairrow">
-          <p className="pk">What the same bot reads on Blind</p>
-          <Blind state="closed" flat className="small">{rows}</Blind>
-          <p className="pn">{bytes ? `${bytes.toLocaleString("en-US")} bytes of sealed data on chain. ` : ""}No side, no amount, nothing to get ahead of.</p>
-        </div>
-      </div>
-    </section>
-  );
-}
+// ------------------------------------------------------------------ hero
+// Replay of one real swap: sealed, price locked, open. The last slot lowers the blind again before the loop.
+const T = [0, 1200, 2300, 3400, 5600, 11600, 13000];
+const STAGE = ["Sealed", "Price locked", "Open at one price"];
+const stageOf = (step: number) => (step >= 4 && step < 5 ? 2 : step >= 2 && step < 4 ? 1 : 0);
+const blindFor = (step: number): BlindState => (step === 4 ? "open" : step === 3 ? "opening" : "closed");
 
-// ------------------------------------------------------------------ 02 how
-const HOW = [
-  { n: "Seal", p: "Your order is signed and locked in your browser to this batch's public key. Nothing readable leaves the page." },
-  { n: "Post", p: "The sealed order lands on chain. Anyone can see that an order exists. Nobody can see its side, size or limit." },
-  { n: "Commit price", p: "Intake closes. The market maker prices from public data only and locks a signed price curve on chain." },
-  { n: "Open", p: "In a later block the batch key is revealed. The contract checks it against the promise made when the batch opened, and every order is opened from chain data." },
-  { n: "Settle", p: "One transaction. The contract sets one price on the locked curve, checks every signature, and pays everyone at that price." },
-];
-
-function How({ rec }: { rec: BatchRec | null }) {
-  const [on, setOn] = useState(0);
-  const refs = useRef<(HTMLLIElement | null)[]>([]);
+function Hero({ rec }: { rec: BatchRec | null }) {
+  const [reduced] = useState(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const [step, setStep] = useState(reduced ? 4 : 0);
+  const sec = useRef<HTMLElement>(null);
+  const seen = useRef(true);
   useEffect(() => {
-    const io = new IntersectionObserver((es) => es.forEach((e) => { if (e.isIntersecting) setOn(Number((e.target as HTMLElement).dataset.i)); }), { rootMargin: "-45% 0px -50% 0px" });
-    refs.current.forEach((r) => r && io.observe(r));
+    const io = new IntersectionObserver((es) => { seen.current = es[es.length - 1].isIntersecting; });
+    if (sec.current) io.observe(sec.current);
     return () => io.disconnect();
   }, []);
-  const bl = rec ? blocksOf(rec) : null;
-  const hs = rec ? hashesOf(rec) : null;
-  const bytes = rec?.posts?.find((p) => p.bytes)?.bytes;
+  useEffect(() => {
+    if (reduced || !rec) return;
+    const start = performance.now();
+    const t = setInterval(() => {
+      if (document.hidden || !seen.current) return; // nothing to replay while the hero is out of view
+      const ms = (performance.now() - start) % T[6];
+      setStep(T.findIndex((x, i) => ms >= x && ms < T[i + 1]));
+    }, 200);
+    return () => clearInterval(t);
+  }, [reduced, rec]);
+  const when = rec?.endedAt ? agoWords(rec.endedAt) : "";
+  return (
+    <section className="hero" ref={sec}>
+      <div className="wrap herogrid">
+        <div className="herotext">
+          <h1>Trade behind the blinds. <span>They open only after the price is locked.</span></h1>
+          <p className="sub">On a public chain, bots see your swap before it lands and trade ahead of you. On Blind your swap is sealed until the price is locked, so there is nothing to see.</p>
+          <div className="ctas">
+            <Link to="/app" className="btn day">Try it, no wallet needed</Link>
+            <Link to="/app?wallet=qorex" className="btn line">Use your QoreX wallet</Link>
+          </div>
+        </div>
+        <div className="herowin">
+          <Blind className="big" state={blindFor(step)} label="A real sealed swap, replayed">
+            <HeroPanel rec={rec} />
+          </Blind>
+          <ol className="strip three" aria-label="What happens to a sealed swap">
+            {STAGE.map((n, i) => <li key={n} className={i === stageOf(step) ? "on" : ""}><span>{n}</span></li>)}
+          </ol>
+          <p className="herocap">{rec ? `A real swap on QoreChain testnet${when ? `, ${when}` : ""}.` : "Reading the latest swap from QoreChain testnet."}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HeroPanel({ rec }: { rec: BatchRec | null }) {
+  if (!rec) return <div className="bp"><div className="bp-h"><span>Reading the latest swap</span></div></div>;
+  const fills = rec.fills ?? [];
+  return (
+    <div className="bp">
+      <div className="bp-h"><span>Behind the blind</span><span>vs the public pool</span></div>
+      {fills.slice(0, 3).map((f, i) => (
+        <div className="bp-r" key={i}>
+          <span className="side">{f.buy ? "Buy" : "Sell"}</span>
+          <span className="what">{inLabel(f)} <span className="arr">for</span> {outLabel(f)}</span>
+          <Edge f={f} />
+        </div>
+      ))}
+      {fills.length > 3 && <div className="bp-more">and {fills.length - 3} more</div>}
+      {rec.settle && (
+        <div className="bp-p">
+          <span>One price for everyone</span>
+          <b>{price(rec.settle.price)} <small>fUSD per fETH</small></b>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ 01 what a bot does
+function attackLine(a: Attempt) {
+  const what = a.side === "buy" ? `bought fETH with ${(Number(a.amountIn) / 1e6).toFixed(2)} fUSD` : `sold ${(Number(a.amountIn) / 1e18).toFixed(4)} fETH`;
+  return `Someone ${what} in public, ${agoWords(a.at)}. The bot saw it waiting, traded ahead of it, and traded back right after.`;
+}
+
+function Problem({ bot, env, envMissing }: { bot: BotStats | null; env: Envelope | null; envMissing: boolean }) {
+  const a = bot?.recent.find((x) => x.order === "bot first" && x.victimLossBps != null && x.victimGot && x.victimWouldGet) ?? null;
+  const lines = env ? (env.hexHead.match(/.{1,32}/g) ?? []).map((l) => l.match(/.{1,4}/g)!.join(" ")) : [];
+  return (
+    <section className="sec wrap" id="problem">
+      <SecHead n="01" title="What a bot does to a public swap" lead="We run a bot on QoreChain testnet that goes after every public swap on our pool. This is its latest real one." />
+      <div className="duo rv">
+        <div className="duorow">
+          <Blind state="open" flat className="small">
+            {a ? (
+              <div className="atkp">
+                <p>{attackLine(a)}</p>
+                <div className="atkn">
+                  <div><span>They got</span><b>{attemptOut(a, a.victimGot!)}</b></div>
+                  <div><span>Without the bot</span><b>{attemptOut(a, a.victimWouldGet!)}</b></div>
+                  <div className="lost"><span>Lost to the bot</span><b>{(a.victimLossBps! / 100).toFixed(2)}%</b></div>
+                </div>
+              </div>
+            ) : (
+              <div className="atkp"><p>{bot ? "No attack recorded yet. Send a public swap from the app and it shows up here." : "Reading the bot's latest attack."}</p></div>
+            )}
+          </Blind>
+          {a && (
+            <p className="quiet">
+              See it on chain: {a.frontHash && <><a href={txUrl(a.frontHash)} target="_blank" rel="noreferrer">the bot's first trade</a>, </>}
+              <a href={txUrl(a.victimHash)} target="_blank" rel="noreferrer">the swap</a>
+              {a.backHash && <>, <a href={txUrl(a.backHash)} target="_blank" rel="noreferrer">the bot's trade back</a></>}.
+            </p>
+          )}
+        </div>
+
+        <div className="duorow">
+          <h3 className="duoh">What the same bot sees on Blind</h3>
+          {env ? (
+            <div className="sealedhex" aria-label="The first bytes of a real sealed swap, as posted on chain">
+              {lines.map((l, i) => <div key={i}>{l}</div>)}
+            </div>
+          ) : (
+            <div className="sealedhex empty" aria-hidden><span className="slats closed big"><i /><i /><i /><i /><i /><i /></span></div>
+          )}
+          <p className="quiet">
+            {env
+              ? `${env.bytes.toLocaleString("en-US")} bytes like this. No side, no amount, nothing to trade ahead of.`
+              : envMissing
+                ? "Every sealed swap lands on chain as 6,648 bytes of sealed data. No side, no amount, nothing to trade ahead of."
+                : "Reading the newest sealed swap from the chain."}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ------------------------------------------------------------------ 02 how it works
+const HOW: { s: BlindState | "locked"; t: string }[] = [
+  { s: "closed", t: "You seal your swap in your browser." },
+  { s: "locked", t: "The market maker locks its price before anyone can open an order." },
+  { s: "open", t: "Every swap that arrived in the same 20 seconds settles together at one price." },
+];
+
+function How() {
   return (
     <section className="sec wrap" id="how">
-      <SecHead n="02" title="How a batch works" lead={rec ? `Five steps, played with the real blocks of batch ${rec.batch}. The price is on chain before any order can be read.` : "Five steps. The price is on chain before any order can be read."} />
-      <div className="how">
-        <div className="howwin">
-          <Blind state={blindFor(on)} label="The batch at this step"><BatchPanel rec={rec} /></Blind>
-          <p className="cap">{bl ? (on === 0 ? "Step 1 happens in your browser, before any block." : `Step ${on + 1}, block ${blockNo(bl[on]!)}.`) : ""}{bl && on === 4 ? ` From the first order to settlement: ${bl[4]! - bl[1]!} blocks.` : ""}</p>
-        </div>
-        <ol className="steps">
-          {HOW.map((s, i) => (
-            <li key={s.n} data-i={i} ref={(r) => { refs.current[i] = r; }} className={i === on ? "on" : i < on ? "done" : ""}>
-              <div className="k"><span>{String(i + 1).padStart(2, "0")}</span><span>{bl ? (bl[i] ? `block ${blockNo(bl[i]!)}` : "in your browser") : ""}</span></div>
-              <h3>{s.n}</h3>
-              <p>{s.p}</p>
-              {i === 2 && rec && !viaLinkedKey(rec.commit?.hash)
-                ? <Qc name={COMMIT_PLAIN.name} href={hs?.[2] ? txUrl(hs[2]!) : undefined} link={`batch ${rec.batch}, this step`}>{COMMIT_PLAIN.rest}</Qc>
-                : <StepQc i={i} href={hs?.[i] ? txUrl(hs[i]!) : undefined} link={rec ? `batch ${rec.batch}, this step` : undefined}>
-                  {i === 0 && bytes ? `${STEP_TECH[0].rest}. ${bytes.toLocaleString("en-US")} bytes per order` : undefined}
-                </StepQc>}
-            </li>
-          ))}
-        </ol>
-      </div>
-    </section>
-  );
-}
-
-// ------------------------------------------------------------------ 03 built on QoreChain
-interface Row { name: string; what: string; use: string; href: string; link: string }
-function Built({ rec }: { rec: BatchRec | null }) {
-  const { s } = useLive();
-  const tx = (h: string | undefined, fallback: string) => (h ? txUrl(h) : fallback);
-  const rows: Row[] = [
-    { name: "ML-DSA-87 accounts and precompiles", what: "Post quantum keys held on chain", use: "Every test account registers its ML-DSA-87 key with proof of possession (MsgRegisterPQCKeyV2) and hybrid signs everything after. At settlement BlindSettlement checks each order's signature through pqcVerify (0x0A01) against the key pqcKeyStatus (0x0A02) reports.", href: tx(rec?.settle?.hash, CONTRACT_URL), link: rec ? `Settlement of batch ${rec.batch}` : "The contract" },
-    { name: "QoreSeal", what: "Hybrid post quantum sealed envelopes", use: "Seals every order in your browser: ML-KEM-1024 + X25519, 6,648 bytes each, so a bot reading the chain learns nothing.", href: tx(rec?.posts?.[0]?.hash, CONTRACT_URL), link: rec ? `A sealed order in batch ${rec.batch}` : "The contract" },
-    { name: "Scoped EVM windows", what: "Limits on what EVM keys do", use: "Your test account opens a window for two approvals, to fUSD and fETH only. The operator posts, reveals and settles inside its own window: 300 transactions, 3,000 blocks, BlindSettlement only.", href: CONTRACT_URL, link: "BlindSettlement on QoreChain EVM" },
-    { name: "Account abstraction spending rule", what: "Linked keys with chain enforced limits", use: "The market maker agent commits prices with its own ed25519 key linked to the operator account. The chain lets it call commit on Blind and nothing else, 1 uqor per call and per day, for 29 days.", href: "/proof#agent", link: "The live rule" },
-    { name: "QoreSign", what: "Hybrid signature checks before broadcast", use: "The relayer checks both halves of every transaction your browser sends, including ML-DSA-87 against the key registered on chain, before it broadcasts.", href: RELAY_SRC, link: "The relay check" },
-    { name: "x/amm", what: "QoreChain's built in exchange", use: "The agent rebalances on pool 3 (fETH/fUSD) from a separate account. Every fill is compared with it, and the public lane swaps on it while our bot reads the public mempool.", href: tx(rec?.hedge?.hash, "/proof#bot"), link: rec?.hedge?.hash ? `Rebalance after batch ${rec.batch}` : "The bot's record" },
-    { name: "@qorechain/pqc", what: "ML-DSA-87 in plain JavaScript", use: "Checks a limit order's signature the moment it arrives, before it waits for a batch.", href: LIMIT_SRC, link: "Where it runs" },
-    { name: "QoreScan", what: "Cryptography inventory of a project", use: "A CBOM of Blind's accounts, live site and contract: what is post quantum, and what is not.", href: QORESCAN_URL, link: "The scan" },
-    { name: "QCAI audit", what: "QoreChain's AI contract auditor", use: "Reviewed BlindSettlement. Our answer to each finding points at a test that proves it.", href: QCAI_URL, link: "The answers" },
-    { name: "Faucet tokens", what: "Test fUSD and fETH", use: "The relayer funds each test account and converts bank coins into ERC-20 tokens with MsgConvertCoin.", href: s ? `https://explore.qore.network/address/${s.tokens.fUSD.address}` : CONTRACT_URL, link: s ? "fUSD token" : "The contract" },
-  ];
-  return (
-    <section className="sec wrap" id="qorechain">
-      <SecHead n="03" title="Built on QoreChain" lead="Each piece of QoreChain that does real work in Blind, in order of how much rests on it." />
-      <ol className="built rv">
-        {rows.map((r, i) => {
-          const ext = !r.href.startsWith("/proof");
-          return (
-            <li key={r.name}>
-              <span className="bi">{String(i + 1).padStart(2, "0")}</span>
-              <div className="bt"><b>{r.name}</b><span>{r.what}</span></div>
-              <p>{r.use}</p>
-              {ext ? <a className="bl" href={r.href} target="_blank" rel="noreferrer">{r.link} <span aria-hidden>↗</span></a> : <Link className="bl" to={r.href}>{r.link}</Link>}
-            </li>
-          );
-        })}
+      <SecHead n="02" title="How it works" />
+      <ol className="how3 rv">
+        {HOW.map((h, i) => (
+          <li key={i}>
+            <span className={`slats ${h.s}`} aria-hidden><i /><i /><i /><i /><i /><i /></span>
+            <span className="hn">{i + 1}</span>
+            <p>{h.t}</p>
+          </li>
+        ))}
       </ol>
+      <p className="quiet rv">Under the hood: post quantum keys and sealing on QoreChain. <Link to="/proof#how">See how</Link></p>
     </section>
   );
 }
 
-// ------------------------------------------------------------------ 04 proof
-function ProofSec({ b }: { b: Batches | null }) {
-  const all = b ? [...b.live, ...b.testRuns].sort((x, y) => y.batch - x.batch) : [];
-  const s = summarize(all);
+// ------------------------------------------------------------------ 03 the record
+function Record({ b, bot }: { b: Batches | null; bot: BotStats | null }) {
+  const app = b ? summarize(b.live) : null;
+  const all = b ? summarize([...b.live, ...b.testRuns]) : null;
   return (
-    <section className="sec wrap" id="proof">
-      <SecHead n="04" title="The proof, batch by batch" lead="Every fill next to what QoreChain's own exchange (x/amm) would have paid for the same input, one block before settlement. Misses stay in." />
-      <div className="rv">
-        <div className="figs">
-          <div><b>{b ? s.batches : "…"}</b><span>batches settled</span></div>
-          <div><b>{b ? `${s.better} of ${s.compared}` : "…"}</b><span>fills beat x/amm</span></div>
-          <div><b>{b && s.avgBps !== null ? pct(s.avgBps) : "…"}</b><span>average per fill vs x/amm</span></div>
-          <div><b>{b && s.markoutUsd !== null ? `${s.markoutUsd >= 0 ? "+" : "−"}${Math.abs(s.markoutUsd).toFixed(2)}` : "…"}</b><span>market maker result in fUSD, 30 blocks later</span></div>
+    <section className="sec wrap" id="record">
+      <SecHead n="03" title="The record so far" />
+      <div className="figs three big rv">
+        <div>
+          <b>{bot ? `${bot.hits} of ${bot.tried}` : "…"}</b>
+          <span>{bot ? `public swaps the bot got ahead of${bot.avgLossBps !== null ? `, taking ${(bot.avgLossBps / 100).toFixed(2)}% on average` : ""}` : "public swaps the bot got ahead of"}</span>
         </div>
-        <div className="rows">
-          {all.filter((r) => r.settled).slice(0, 6).map((r) => (
-            <a key={`${r.live ? "l" : "t"}${r.version ?? 2}-${r.batch}`} href={batchPath(r)} className="brow" onClick={(e) => { e.preventDefault(); navigate(batchPath(r)); }}>
-              <SlatGlyph state="open" />
-              <span className="bn">Batch {r.batch}</span>
-              <span className="who">{r.live ? "from the app" : "test traders (our accounts)"}</span>
-              <span className="fills">{r.fills?.map((f, i) => <span key={i}><small>{f.buy ? "buy" : "sell"}</small> <Edge f={f} /></span>)}</span>
-              <span className="px mono">{price(r.settle!.price)}</span>
-              <span className="when">{r.live ? ago(r.endedAt) : `block ${blockNo(r.settle!.block)}`}</span>
-            </a>
-          ))}
-          {!b && <div className="empty">Reading batches from the server.</div>}
+        <div>
+          <b className={app?.avgBps != null && app.avgBps < 0 ? "neg" : ""}>{app ? (app.avgBps !== null ? pct(app.avgBps) : "none yet") : "…"}</b>
+          <span>how sealed swaps did on average, against the same swap on QoreChain's public pool</span>
         </div>
-        <Link to="/proof" className="btn line">Every batch, with block numbers</Link>
-      </div>
-    </section>
-  );
-}
-
-// ------------------------------------------------------------------ 04 limits
-function Limits() {
-  return (
-    <section className="sec wrap" id="limits">
-      <SecHead n="05" title="What the chain checks, and what it does not" lead="Sealing stops bots from reading your order, and the market maker locks its price before any order opens. It does not remove every party you trust." />
-      <div className="limits rv">
-        <div className="lit">
-          <h3>In daylight: the chain checks</h3>
-          <ul>
-            <li><b>The price came first.</b> The market maker's curve is on chain, signed, before the batch key is revealed.</li>
-            <li><b>The key is the one promised.</b> Its fingerprint is fixed on chain when the batch opens.</li>
-            <li><b>The contract sets the price,</b> not the operator, from the locked curve and the orders.</li>
-            <li><b>Every order is yours.</b> Each carries your post quantum signature, checked against the key QoreChain holds for your account.</li>
-            <li><b>Your limit holds.</b> Nobody is filled below the minimum they signed.</li>
-            <li><b>The agent is on a leash.</b> Its key is linked to the operator account with a spending rule the chain enforces: the only call it can make is committing a price curve to Blind, and it can move at most 1 uqor a day.</li>
-          </ul>
-        </div>
-        <div className="shade">
-          <h3>In the shade: you trust the operator for</h3>
-          <ul>
-            <li><b>Not peeking.</b> The operator holds the batch key, so it could read orders before the reveal. The chain proves the price was fixed before the reveal and that the contract computed it.</li>
-            <li><b>One service, two roles.</b> Today the operator and the market maker run as one service. So the promise that the market maker cannot price against your order rests on the operator not peeking.</li>
-            <li><b>Limit orders.</b> They are sealed to a standing key the operator can read, so they can wait across batches.</li>
-            <li><b>Including you.</b> The operator picks which posted orders go to settlement. Left out orders are listed with the reason, and anyone can open every order after the reveal.</li>
-            <li><b>Price when alone.</b> Trading alone you pay about what x/amm charges plus 0.15%. When buyers and sellers meet in a batch, the lighter side gets a much better price than x/amm and the heavier side pays about the market maker's price for the rest.</li>
-            <li><b>Testnet.</b> fUSD, fETH and QOR here are test tokens with no value.</li>
-          </ul>
+        <div>
+          <b>{all ? all.fills.toLocaleString("en-US") : "…"}</b>
+          <span>sealed swaps settled on QoreChain testnet</span>
         </div>
       </div>
+      <Link to="/proof" className="btn line rv">See every swap</Link>
     </section>
   );
 }
 
-// ------------------------------------------------------------------ 05 faq
+// ------------------------------------------------------------------ 04 questions
 const QA: [string, string][] = [
-  ["Do I need a wallet?", "No. One button makes a test account in this browser, registers its post quantum key and funds it with test QOR, fUSD and fETH. The recovery words stay in this browser."],
-  ["What does post quantum mean here?", "Signatures use ML-DSA-87 and sealing uses ML-KEM-1024, the NIST standards FIPS 204 and FIPS 203, built to hold against quantum computers. QoreChain stores each account's signing key, and the Blind contract checks your order against it."],
-  ["Why a batch instead of a normal swap?", "Orders that arrive together are opened together and paid one price. There is no first in line to jump, so there is nothing to front run. Buyers and sellers in the same batch also meet each other directly, which beats paying the pool on both sides."],
-  ["Who is the market maker?", "An AI agent with its own post quantum key. It sees only public data when it prices: the x/amm pool, its own stock and recent moves. After settlement it rebalances on x/amm from a separate account."],
-  ["What if the price passes my limit?", "Your order is left out of that batch with the reason recorded, and nothing leaves your account. You choose the limit before sealing; 4% from the pool price is the default."],
-  ["What is x/amm?", "QoreChain's built in exchange, a constant product pool. Every Blind fill is compared with what x/amm would have paid for the same input at the block before settlement."],
+  ["What is a batch?", "Every swap that arrives in the same 20 seconds. They settle together at one price, so the order inside a batch cannot be exploited."],
+  ["Is this real money?", "No. Blind runs on QoreChain testnet, as the hackathon asks, with test tokens that have no value. Every swap is still a real transaction on chain."],
+  ["Do I need a wallet?", "No. One button makes a test account in this browser and fills it with test tokens. If you already use QoreX, you can trade from it instead."],
+  ["Who can read my order?", "Not bots and not other traders: your swap is sealed in your browser. The operator that runs Blind holds the key for each batch, so you trust it not to peek. The chain proves the price was locked before any order was opened."],
+  ["Why does my public swap lose to the bot?", "We run that bot ourselves on testnet. It does what bots do on any public chain: reads your swap while it waits, trades first and trades back after. It is there so you can see what Blind keeps you out of."],
 ];
 function Faq() {
   return (
-    <section className="sec wrap" id="faq">
-      <SecHead n="06" title="Questions" />
+    <section className="sec wrap lastsec" id="faq">
+      <SecHead n="04" title="Questions" />
       <div className="faq rv">
         {QA.map(([q, a], i) => (
           <details className="qa" key={q} open={i === 0} {...{ name: "faq" }}><summary>{q}</summary><div className="a">{a}</div></details>

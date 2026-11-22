@@ -2,12 +2,16 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 export type BlindState = "closed" | "opening" | "open";
 
+/** Only one WebGL blind per page: the first one mounted owns the renderer, every other blind draws the CSS version. */
+let glOwner: object | null = null;
+
 /**
  * A venetian blind in front of a lit panel, drawn with three.js.
  * closed:  slats face you, the panel sits in shade (orders sealed, price not yet locked).
  * opening: slats tilt edge on, daylight leaks through (the price is locked, the key is revealed).
  * open:    slats rise and stack under the headrail, leaving a clean lit panel (settled).
- * Falls back to a plain CSS panel when WebGL is missing or `flat` is set.
+ * Falls back to a plain CSS panel when WebGL is missing, `flat` is set, or another blind already owns WebGL.
+ * The renderer draws only while the slats move, and waits while the blind is off screen or the tab is hidden.
  */
 export default function Blind({ state, children, className = "", label, flat = false }: { state: BlindState; children: ReactNode; className?: string; label?: string; flat?: boolean }) {
   const stage = useRef<HTMLDivElement>(null);
@@ -20,7 +24,9 @@ export default function Blind({ state, children, className = "", label, flat = f
   useEffect(() => { kick.current(); }, [state]);
 
   useEffect(() => {
-    if (flat) return;
+    if (flat || glOwner) return;
+    const me = {};
+    glOwner = me;
     const el = stage.current!, w = win.current!;
     let disposed = false;
     let cleanup = () => undefined as void;
@@ -32,12 +38,10 @@ export default function Blind({ state, children, className = "", label, flat = f
       if (disposed) return;
       let r: InstanceType<typeof THREE.WebGLRenderer>;
       try {
-        const probe = document.createElement("canvas");
-        if (!(probe.getContext("webgl2") || probe.getContext("webgl"))) throw new Error("no webgl");
-        r = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        r = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "low-power" });
       } catch { return; }
       const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-      r.setPixelRatio(Math.min(devicePixelRatio, 2));
+      r.setPixelRatio(Math.min(devicePixelRatio, 1.5));
       r.toneMapping = THREE.ACESFilmicToneMapping;
       r.outputColorSpace = THREE.SRGBColorSpace;
       r.domElement.className = "blind-gl";
@@ -87,8 +91,10 @@ export default function Blind({ state, children, className = "", label, flat = f
         cam.position.set(0, band / 2, (tot / 2) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
         cam.lookAt(0, band / 2, 0);
         cam.updateProjectionMatrix();
-        slats.forEach((s) => scene.remove(s)); slats.length = 0;
-        geos.forEach((g) => g.dispose()); geos.length = 0;
+        for (const s of slats) scene.remove(s);
+        slats.length = 0;
+        for (const g of geos) g.dispose();
+        geos.length = 0;
         const g = slatGeo(W * 0.985, (H / N) * 1.12); geos.push(g);
         for (let i = 0; i < N; i++) { const m = new THREE.Mesh(g, mat); scene.add(m); slats.push(m); }
         rail.scale.set(W * 1.01, 0.16, 0.22);
@@ -100,8 +106,11 @@ export default function Blind({ state, children, className = "", label, flat = f
       const cl = (x: number) => Math.min(1, Math.max(0, x));
       // raw progress of the two stages; tilt first, then lift. Lowering runs in reverse.
       let tiltP = 0, liftP = 0;
-      const goal = () => (target.current === "open" ? [1, 1] : target.current === "opening" ? [1, 0] : [0, 0]);
-      if (reduced) { [tiltP, liftP] = goal(); }
+      const goalTilt = () => (target.current === "closed" ? 0 : 1);
+      const goalLift = () => (target.current === "open" ? 1 : 0);
+      if (reduced) { tiltP = goalTilt(); liftP = goalLift(); }
+      // CSS variables are written only when their rounded value changes, so the page restyles a few times per move, not every frame.
+      let vo = "", vg = "", vb = "";
 
       function draw() {
         if (!slats.length) return;
@@ -116,21 +125,25 @@ export default function Blind({ state, children, className = "", label, flat = f
         }
         const bottom = slats[N - 1].position.y;
         const rb = top + band - 0.2;
-        strings.forEach((s, k) => { const len = rb - bottom + 0.05; s.scale.y = len; s.position.set((k ? 1 : -1) * W * 0.3, rb - len / 2, 0.03); });
+        const len = rb - bottom + 0.05;
+        for (let k = 0; k < 2; k++) { const s = strings[k]; s.scale.y = len; s.position.set((k ? 1 : -1) * W * 0.3, rb - len / 2, 0.03); }
         const cl2 = 1.4 + lift * 1.1;
         cord.scale.y = cl2; cord.position.set(W / 2 - 0.12, rb - cl2 / 2, 0.08); tassel.position.set(W / 2 - 0.12, rb - cl2 - 0.06, 0.08);
         const light = Math.max(tilt * 0.55, lift);
-        el.style.setProperty("--o", String(cl(tilt * 0.25 + lift)));
-        el.style.setProperty("--g", String(0.03 + light * 0.09));
-        el.style.setProperty("--b", String(0.55 + 0.45 * light));
+        const o = cl(tilt * 0.25 + lift).toFixed(2), g = (0.03 + light * 0.09).toFixed(3), b = (0.55 + 0.45 * light).toFixed(2);
+        if (o !== vo) { vo = o; el.style.setProperty("--o", o); }
+        if (g !== vg) { vg = g; el.style.setProperty("--g", g); }
+        if (b !== vb) { vb = b; el.style.setProperty("--b", b); }
         back.intensity = 3 + light * 4;
         r.render(scene, cam);
       }
 
-      let raf = 0, last = 0;
+      let raf = 0, last = 0, onScreen = true;
+      const active = () => onScreen && !document.hidden;
       function step(ms: number) {
+        if (!active()) { raf = 0; last = 0; return; } // picks up from here when visible again
         const dt = last ? Math.min(0.05, (ms - last) / 1000) : 0.016; last = ms;
-        const [gt, gl] = goal();
+        const gt = goalTilt(), gl = goalLift();
         // up: tilt then lift. down: lower then flatten.
         if (liftP > gl) liftP = Math.max(gl, liftP - dt / 1.4);
         else if (tiltP < gt) tiltP = Math.min(gt, tiltP + dt / 1.3);
@@ -140,23 +153,28 @@ export default function Blind({ state, children, className = "", label, flat = f
         if (tiltP !== gt || liftP !== gl) raf = requestAnimationFrame(step); else { raf = 0; last = 0; }
       }
       kick.current = () => {
-        if (reduced) { [tiltP, liftP] = goal(); draw(); return; }
-        if (!raf) { last = 0; raf = requestAnimationFrame(step); }
+        if (reduced) { tiltP = goalTilt(); liftP = goalLift(); draw(); return; }
+        if (!raf && active()) { last = 0; raf = requestAnimationFrame(step); }
       };
+      const io = new IntersectionObserver((es) => { onScreen = es[es.length - 1].isIntersecting; if (onScreen) kick.current(); });
+      io.observe(el);
+      const onVis = () => { if (!document.hidden) kick.current(); };
+      document.addEventListener("visibilitychange", onVis);
       const ro = new ResizeObserver(() => layout());
       ro.observe(el);
       layout();
       kick.current();
       cleanup = () => {
-        cancelAnimationFrame(raf); ro.disconnect();
-        geos.forEach((g) => g.dispose());
-        [railGeo, strGeo, cordGeo, tasGeo, mat, railMat, strMat, cordMat, tasMat].forEach((x) => x.dispose());
+        cancelAnimationFrame(raf); ro.disconnect(); io.disconnect();
+        document.removeEventListener("visibilitychange", onVis);
+        for (const g of geos) g.dispose();
+        for (const x of [railGeo, strGeo, cordGeo, tasGeo, mat, railMat, strMat, cordMat, tasMat]) x.dispose();
         r.dispose(); r.forceContextLoss(); r.domElement.remove();
         setGl(false);
         kick.current = () => undefined;
       };
     })();
-    return () => { disposed = true; cleanup(); };
+    return () => { disposed = true; cleanup(); if (glOwner === me) glOwner = null; };
   }, [flat]);
 
   return (

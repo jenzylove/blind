@@ -51,7 +51,11 @@ type Mode = "burner" | "qorex";
 const OFF_KEY = "blind.qorex.off.v1";
 const walletOff = () => { try { return localStorage.getItem(OFF_KEY) === "1"; } catch { return false; } };
 const setWalletOff = (v: boolean) => { try { if (v) localStorage.setItem(OFF_KEY, "1"); else localStorage.removeItem(OFF_KEY); } catch { /* blocked */ } };
-const loadMode = (): Mode => { try { return localStorage.getItem(MODE_KEY) === "qorex" ? "qorex" : "burner"; } catch { return "burner"; } };
+const loadMode = (): Mode => {
+  // /app?wallet=qorex (the landing's "Use your QoreX wallet" link) preselects QoreX.
+  if (new URLSearchParams(location.search).get("wallet") === "qorex") { try { localStorage.setItem(MODE_KEY, "qorex"); } catch { /* blocked */ } return "qorex"; }
+  try { return localStorage.getItem(MODE_KEY) === "qorex" ? "qorex" : "burner"; } catch { return "burner"; }
+};
 const TRACK_KEY = "blind.orders.v1";
 const loadTracked = (): Tracked[] => { try { return JSON.parse(localStorage.getItem(TRACK_KEY) ?? "[]"); } catch { return []; } };
 const saveTracked = (t: Tracked[]) => { try { localStorage.setItem(TRACK_KEY, JSON.stringify(t.slice(0, 12))); } catch { /* blocked */ } };

@@ -11,7 +11,7 @@ import { evmWindowStatus } from "@qorechain/evm";
 import { account, send, state, readEnv, NET, denom, CONVERT_COIN, TOKENS, pub, ERC20_ABI } from "../src/chain.ts";
 import { Engine, readPool, makerInventory, agentLinkFrom } from "../src/engine/batch.ts";
 import { fetchSpendingRules, fetchAuthenticators } from "@qorechain/sdk";
-import { toHex } from "viem";
+import { toHex, parseAbi, parseEventLogs } from "viem";
 import { makeQuote, clearingPrice, cpOut, SCALE } from "../src/agent/policy.ts";
 import { BatchLoop } from "./loop.ts";
 import { relayCheck } from "./relay.ts";
@@ -172,6 +172,30 @@ app.get("/api/batches", (c) => c.json({
     ],
   },
 }));
+// The first bytes of the newest sealed order on the current contract, read back from its Sealed event.
+// The landing shows these so a visitor sees exactly what a bot reading the chain gets.
+const SEALED_EVENT = parseAbi(["event Sealed(uint64 indexed batch, uint32 index, bytes envelope)"]);
+let envCache: { at: number; v: { batch: number; version: number; txHash: string; bytes: number; hexHead: string } | null } | null = null;
+app.get("/api/envelope/latest", async (c) => {
+  if (!envCache || Date.now() - envCache.at > 60_000) {
+    let v: NonNullable<typeof envCache>["v"] = null;
+    for (const r of [...loop.records].reverse().slice(0, 5)) {
+      const h = r.posts?.[0]?.hash as Hex | undefined;
+      if (!h) continue;
+      try {
+        const rc = await pub.getTransactionReceipt({ hash: h });
+        const ev = parseEventLogs({ abi: SEALED_EVENT, logs: rc.logs.filter((l) => l.address.toLowerCase() === settlement.toLowerCase()) })[0];
+        if (!ev) continue;
+        const env = ev.args.envelope as Hex;
+        v = { batch: r.batch, version: dep.version ?? 2, txHash: h, bytes: (env.length - 2) / 2, hexHead: env.slice(2, 162) };
+        break;
+      } catch { /* try the next batch */ }
+    }
+    envCache = { at: Date.now(), v };
+  }
+  return envCache.v ? c.json(envCache.v) : bad(c, "no sealed order on the current contract yet", 404);
+});
+
 // The first version's test runs (flat quote, before the curve fix), read only, for the proof page.
 const V1 = existsSync("deployments/batches.json") ? JSON.parse(readFileSync("deployments/batches.json", "utf8")) : [];
 app.get("/api/batches/v1", (c) => c.json(V1));
