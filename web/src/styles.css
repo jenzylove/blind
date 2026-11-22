@@ -587,3 +587,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .blind:not(.gl):not(.flat).open .blind-shade i { transform: rotateX(86deg); }
 .blind:not(.gl):not(.flat).open .blind-shade { transform: translateY(-100%) scaleY(.08); opacity: 1; transition: transform 1.2s cubic-bezier(.65,0,.35,1) .35s; }
 @media (prefers-reduced-motion: reduce) { .blind-shade i { transition: none !important; } }
+
+.readout { display: grid; gap: 6px; margin: 4px 0 14px; color: var(--fg2); font-size: 15px; }
+.readout b { color: var(--fg); font-weight: 600; font-size: 17px; margin-bottom: 10px; }

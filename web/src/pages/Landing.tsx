@@ -165,6 +165,13 @@ function Problem({ bot, env, envMissing }: { bot: BotStats | null; env: Envelope
 
         <div className="duorow">
           <h3 className="duoh">What the same bot sees on Blind</h3>
+          {a && (
+            <p className="readout">
+              <span>From the public swap above, the bot read:</span>
+              <b>{a.side === "buy" ? `Buy fETH with ${(Number(a.amountIn) / 1e6).toFixed(2)} fUSD, accepts as little as ${attemptOut(a, a.minOut)}` : `Sell ${(Number(a.amountIn) / 1e18).toFixed(4)} fETH, accepts as little as ${attemptOut(a, a.minOut)}`}</b>
+              <span>From a Blind swap, it reads only this:</span>
+            </p>
+          )}
           {env ? (
             <div className="sealedhex" aria-label="The first bytes of a real sealed swap, as posted on chain">
               {lines.map((l, i) => <div key={i}>{l}</div>)}
@@ -174,7 +181,7 @@ function Problem({ bot, env, envMissing }: { bot: BotStats | null; env: Envelope
           )}
           <p className="quiet">
             {env
-              ? `${env.bytes.toLocaleString("en-US")} bytes like this. No side, no amount, nothing to trade ahead of.`
+              ? `A real sealed swap, copied from QoreChain: ${env.bytes.toLocaleString("en-US")} bytes of this. No side, no amount, no limit. It turns back into an order only after the market maker has locked its price, so there is nothing to trade ahead of.`
               : envMissing
                 ? "Every sealed swap lands on chain as 6,648 bytes of sealed data. No side, no amount, nothing to trade ahead of."
                 : "Reading the newest sealed swap from the chain."}
