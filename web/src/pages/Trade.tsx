@@ -1,26 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { UnifiedAccount } from "@qorechain/sdk";
-import { api, batchPath, type Attempt, type BatchRec, type BotStats, type Quote, type State } from "../lib/api";
+import { api, batchPath, type Attempt, type BatchRec, type BotStats, type CurrentBatch, type Quote, type State } from "../lib/api";
 import {
   loadAccount, newAccount, forgetAccount, storedWords, fund, registerKey, openWindow, approveBoth,
   placeSwap, placeLimit, minOutFor, pub, publicSwapResult, bankDenom, burnerTrader, type Built, type Trader,
 } from "../lib/chain";
 import { qorex, connectQorex, approveFromQorex, qorexTrader, plainQorexError, FAUCET_URL, QOREX_INSTALL_URL, type QorexConn } from "../lib/qorex";
 import { usd, eth, short, blockNo, pct, edgeBps } from "../lib/fmt";
-import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled, Qc, StepQc, agoWords } from "../ui";
+import { useLive, useNow, phaseStep, TxLink, Copy, Link, refreshState, usePoll, Qc, StepQc } from "../ui";
 import { txUrl, STEP_TECH, viaLinkedKey, COMMIT_PLAIN } from "../lib/qore";
 import Blind from "../Blind";
-import BatchPanel from "../BatchPanel";
+import { PairBar, PriceChart, OrderBook, Tape, useSeries } from "./Market";
 
 type StepState = "todo" | "run" | "done" | "err";
 interface Setup { keys: StepState; fund: StepState; key: StepState; window: StepState; approve: StepState }
-const SETUP_TEXT: Record<keyof Setup, [string, string]> = {
-  keys: ["Make a test account", "Keys are created in this browser, including your post quantum key."],
-  fund: ["Get test funds", "15 fUSD and 0.005 fETH for sealed swaps, 6 fUSD and 0.002 fETH for a public swap, and QOR for fees, from the Blind faucet."],
-  key: ["Register your post quantum key", "QoreChain records your signing key so the contract can check your orders."],
-  window: ["Open a short EVM window", "Allows two token approvals, to fUSD and fETH only."],
-  approve: ["Approve the Blind contract", "Lets settlement move the tokens you sell. Two transactions."],
-};
+type Hashes = { k: string; h: string }[];
 
 interface Me { fUSD: bigint; fETH: bigint; qor: bigint; bank: { fUSD: bigint; fETH: bigint }; approved: { fUSD: boolean; fETH: boolean }; registered: boolean; proven: boolean }
 type Who = { evm: string; cosmos: string };
@@ -59,19 +54,21 @@ const loadMode = (): Mode => {
 const TRACK_KEY = "blind.orders.v1";
 const loadTracked = (): Tracked[] => { try { return JSON.parse(localStorage.getItem(TRACK_KEY) ?? "[]"); } catch { return []; } };
 const saveTracked = (t: Tracked[]) => { try { localStorage.setItem(TRACK_KEY, JSON.stringify(t.slice(0, 12))); } catch { /* blocked */ } };
+const NO_SETUP: Setup = { keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" };
 
 export default function Trade() {
   const { s, down } = useLive();
-  const now = useNow(500);
+  // A slow tick for the chart and the order list; the pair bar and the book keep their own faster ones.
+  const now = useNow(5000);
   const [acc, setAcc] = useState<UnifiedAccount | null>(null);
   const [me, setMe] = useState<Me | null>(null);
-  const [setup, setSetup] = useState<Setup>({ keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" });
+  const [setup, setSetup] = useState<Setup>(NO_SETUP);
   const [setupMsg, setSetupMsg] = useState<string>("");
   const [setupErr, setSetupErr] = useState<string>("");
   const [busy, setBusy] = useState(false);
-  const [hashes, setHashes] = useState<{ k: string; h: string }[]>([]);
+  const [hashes, setHashes] = useState<Hashes>([]);
+  const [qxHashes, setQxHashes] = useState<Hashes>([]);
   const [tracked, setTracked] = useState<Tracked[]>(loadTracked);
-  const [tab, setTab] = useState<"both" | "swap" | "limit">("both");
   const [duel, setDuel] = useState<Duel | null>(loadDuel);
   // The QoreChain detail under each step stays one tap away.
   const [tech, setTech] = useState<boolean>(() => { try { return localStorage.getItem("blind.tech") === "1"; } catch { return false; } });
@@ -82,6 +79,24 @@ export default function Trade() {
   const [walletMe, setWalletMe] = useState<Me | null>(null);
   const [walletRestoring, setWalletRestoring] = useState(() => loadMode() === "qorex");
   const setMode = (m: Mode) => { setModeS(m); try { localStorage.setItem(MODE_KEY, m); } catch { /* blocked */ } };
+  const mineRef = useRef<HTMLElement>(null);
+
+  // Market data: the pool price over time, settled batches, the bot's record and the open batch.
+  const { v: market } = usePoll(api.market, 15000);
+  const { v: b } = usePoll(api.batches, 6000);
+  const { v: bot } = usePoll(api.bot, 8000);
+  const [cur, setCur] = useState<CurrentBatch | null>(null);
+  const active = !!s && s.phase !== "waiting";
+  useEffect(() => {
+    if (!active) { setCur(null); return; }
+    let on = true;
+    const go = () => api.currentBatch().then((x) => on && setCur(x)).catch(() => undefined);
+    go();
+    const t = setInterval(go, 2500);
+    return () => { on = false; clearInterval(t); };
+  }, [active, s?.batch.id]);
+  const series = useSeries(market, s, now);
+  const lastBatch = useMemo(() => (b?.live ?? []).find((r) => r.settled && r.settle && r.fills?.length) ?? null, [b]);
 
   const burner = useMemo(() => (acc ? burnerTrader(acc) : null), [acc]);
   const qx = useMemo(() => (wallet ? qorexTrader(wallet) : null), [wallet]);
@@ -139,7 +154,6 @@ export default function Trade() {
   const walletReady = !!walletMe && walletMe.approved.fUSD && walletMe.approved.fETH && walletMe.proven;
   const ready = mode === "qorex" ? walletReady : burnerReady;
   const activeMe = mode === "qorex" ? walletMe : me;
-  const need = mode === "qorex" ? "Connect QoreX first" : "Get a test account first";
 
   async function runSetup() {
     if (busy) return;
@@ -162,7 +176,7 @@ export default function Trade() {
       mark("fund", "done");
       cur = "key";
       if (!m.registered) {
-        mark("key", "run"); setSetupMsg("Registering your post quantum key on QoreChain.");
+        mark("key", "run"); setSetupMsg("Registering your signing key on QoreChain.");
         const r = await registerKey(a);
         if (r) setHashes((h) => [...h, { k: "Key registered", h: r.hash }]);
       }
@@ -170,17 +184,17 @@ export default function Trade() {
       cur = "window";
       if (!(m.approved.fUSD && m.approved.fETH)) {
         const st = s ?? (await api.state());
-        mark("window", "run"); setSetupMsg("Opening a short EVM window for two approvals.");
+        mark("window", "run"); setSetupMsg("Getting ready to approve fUSD and fETH.");
         const w = await openWindow(a, [st.tokens.fUSD.address, st.tokens.fETH.address]);
         setHashes((h) => [...h, { k: "Window", h: w.hash }]);
         mark("window", "done");
         cur = "approve";
-        mark("approve", "run"); setSetupMsg("Approving the Blind contract for fUSD and fETH.");
+        mark("approve", "run"); setSetupMsg("Approving fUSD and fETH for trading.");
         const ap = await approveBoth(a, st);
         setHashes((h) => [...h, ...ap.map((x, i) => ({ k: `Approval ${i + 1}`, h: x }))]);
       }
       mark("window", "done"); mark("approve", "done");
-      setSetupMsg("Your test account is ready. Send a swap both ways.");
+      setSetupMsg("");
       await refreshMe(a);
     } catch (e: any) {
       mark(cur, "err");
@@ -193,55 +207,58 @@ export default function Trade() {
     const own = { ...t, who: trader?.evm.toLowerCase() };
     setTracked((xs) => { const n = [own, ...xs]; saveTracked(n); return n; });
   }
-  const placed = (t: Tracked) => { addTracked(t); refreshActive(); };
+  const placed = (t: Tracked) => {
+    addTracked(t); refreshActive();
+    if (!t.duel) setTimeout(() => mineRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 150);
+  };
   const mine = tracked.filter((t) => ownedBy(t, trader));
   const shownDuel = duel && ownedBy(duel, trader) ? duel : null;
+  const resetBurner = () => {
+    const keep = tracked.filter((t) => t.who && t.who !== acc?.evm.toLowerCase());
+    forgetAccount(); setAcc(null); setMe(null); setHashes([]); setSetup(NO_SETUP); setSetupMsg(""); setSetupErr(""); setTracked(keep); saveTracked(keep);
+    if (duel && ownedBy(duel, burner)) { setDuel(null); saveDuel(null); }
+  };
+  const disconnect = () => { setWalletOff(true); setWallet(null); setWalletMe(null); };
+
+  // The account chip lives in the top bar, next to the theme switch.
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => { setSlot(document.getElementById("navacct")); }, []);
+
+  const bookMine = useMemo(() => mine.filter((t) => t.kind === "swap").map((t) => ({ postHash: t.postHash, bytes: t.bytes, at: t.at, batch: t.batch })), [tracked, trader]);
 
   return (
     <div className={`page wrap apppage ${tech ? "tech" : ""}`}>
-      <div className="apphead">
-        <h1>Sealed swap</h1>
-        <p>fUSD and fETH on QoreChain testnet. Your order is sealed here, in this browser, before it is sent.</p>
+      <div className="term">
+        <PairBar s={s} down={down} series={series} lastBatch={lastBatch} />
+        <OrderBook s={s} cur={cur} lastBatch={lastBatch} mine={bookMine} />
+        <PriceChart series={series} batches={market?.batches ?? []} now={now} />
+        <Tape live={b?.live ?? null} bot={bot} />
+        <aside className="pn-trade" aria-label="Trade">
+          <div className="tstick">
+            {ready && trader
+              ? <TradeBox s={s} acc={trader} me={activeMe}
+                  onDuel={(d) => { const own = { ...d, who: trader.evm.toLowerCase() }; setDuel(own); saveDuel(own); }} onPlaced={placed} />
+              : mode === "burner"
+                ? <BurnerStart restoring={restoring} acc={acc} setup={setup} busy={busy} msg={setupMsg} err={setupErr} hashes={hashes} onRun={runSetup} onQorex={() => setMode("qorex")} />
+                : <QorexStart restoring={walletRestoring} wallet={wallet} me={walletMe} s={s} hashes={qxHashes}
+                    addHash={(k, h) => setQxHashes((x) => [...x, { k, h }])}
+                    onConnected={(w) => { setWalletOff(false); setWallet(w); refreshWallet(w); }}
+                    onRefresh={() => refreshWallet()} onBurner={() => setMode("burner")} />}
+          </div>
+        </aside>
+        <section className="pn-mine" aria-label="Your orders" ref={mineRef}>
+          <YourOrders tracked={mine} duel={shownDuel} acc={trader} s={s} now={now} live={b?.live ?? null} onSettled={() => refreshActive()} />
+        </section>
+      </div>
+      <div className="termfoot">
+        <span>Test tokens on QoreChain testnet. They have no value.</span>
         <button className="linkbtn techtoggle" onClick={toggleTech}>{tech ? "Hide what QoreChain does at each step" : "Show what QoreChain does at each step"}</button>
       </div>
-      <div className="tradegrid">
-        <div className="tradeside">
-          <BatchBar s={s} down={down} now={now} tracked={mine} />
-        </div>
-        <div className="trademain">
-          <div className="pick">
-            <div className="seg who" role="radiogroup" aria-label="How you trade">
-              <button role="radio" aria-checked={mode === "burner"} className={mode === "burner" ? "on" : ""} disabled={busy} onClick={() => setMode("burner")}>Make a test account in this browser</button>
-              <button role="radio" aria-checked={mode === "qorex"} className={mode === "qorex" ? "on" : ""} disabled={busy} onClick={() => setMode("qorex")}>Use my QoreX wallet</button>
-            </div>
-          </div>
-          {mode === "burner"
-            ? <AccountPanel restoring={restoring} acc={acc} me={me} setup={setup} busy={busy} msg={setupMsg} err={setupErr} hashes={hashes}
-                onRun={runSetup} onRefresh={() => refreshMe()}
-                onReset={() => { const keep = tracked.filter((t) => t.who && t.who !== acc?.evm.toLowerCase()); forgetAccount(); setAcc(null); setMe(null); setHashes([]); setSetup({ keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" }); setTracked(keep); saveTracked(keep); if (duel && ownedBy(duel, burner)) { setDuel(null); saveDuel(null); } }} />
-            : <QorexPanel restoring={walletRestoring} wallet={wallet} me={walletMe} s={s}
-                onConnected={(w) => { setWalletOff(false); setWallet(w); refreshWallet(w); }}
-                onRefresh={() => refreshWallet()}
-                onDisconnect={() => { setWalletOff(true); setWallet(null); setWalletMe(null); }} />}
-          <div className={`stp ${ready ? "cur" : "later"}`}>
-            <div className="stph"><span className="n">5</span><h3>Send a swap</h3></div>
-            <div className="stpb">
-              <div className="tabs" role="tablist">
-                <button role="tab" aria-selected={tab === "both"} className={tab === "both" ? "on" : ""} onClick={() => setTab("both")}>Both ways</button>
-                <button role="tab" aria-selected={tab === "swap"} className={tab === "swap" ? "on" : ""} onClick={() => setTab("swap")}>Sealed only</button>
-                <button role="tab" aria-selected={tab === "limit"} className={tab === "limit" ? "on" : ""} onClick={() => setTab("limit")}>Limit order</button>
-              </div>
-              {tab === "both"
-                ? <BothBox need={need} s={s} acc={trader} me={activeMe} ready={ready} onDuel={(d) => { const own = { ...d, who: trader?.evm.toLowerCase() }; setDuel(own); saveDuel(own); }} onPlaced={placed} />
-                : tab === "swap"
-                  ? <SwapBox need={need} s={s} acc={trader} me={activeMe} ready={ready} onPlaced={placed} />
-                  : <LimitBox need={need} s={s} acc={trader} me={activeMe} ready={ready} onPlaced={placed} />}
-            </div>
-          </div>
-          {trader && shownDuel && <DuelView key={shownDuel.id} d={shownDuel} acc={trader} s={s} now={now} onSettled={() => refreshActive()} />}
-          <Orders tracked={mine.filter((t) => !t.duel)} acc={trader} s={s} now={now} onSettled={() => refreshActive()} />
-        </div>
-      </div>
+      {slot && trader && createPortal(
+        <AccountChip kind={trader.kind} evm={trader.evm} me={activeMe} hashes={mode === "qorex" ? qxHashes : hashes}
+          onRefresh={() => { refreshActive(); }}
+          onReset={resetBurner} onDisconnect={disconnect}
+          onSwitch={() => setMode(mode === "qorex" ? "burner" : "qorex")} switchBusy={busy} />, slot)}
     </div>
   );
 }
@@ -252,113 +269,52 @@ function stepsFrom(m: Me): Setup {
   return { keys: "done", fund: funded ? "done" : "todo", key: m.registered ? "done" : "todo", window: approved ? "done" : "todo", approve: approved ? "done" : "todo" };
 }
 
-// ------------------------------------------------------------------ the live batch, as a blind
-function BatchBar({ s, down, now, tracked }: { s: State | null; down: boolean; now: number; tracked: Tracked[] }) {
-  const step = s ? phaseStep(s.phase) : -1;
-  const left = s?.phase === "intake" && s.batch.closesAt ? Math.max(0, Math.ceil((s.batch.closesAt - now) / 1000)) : null;
-  const { v: b } = usePoll(api.batches, 6000);
-  const state = s ? phaseBlind(s.phase) : "closed";
-  const thisRec = s && b ? b.live.find((r) => r.batch === s.batch.id && r.settled) ?? null : null;
-  const shown = s?.phase === "hedging" ? thisRec : s?.phase === "waiting" ? latestSettled(b ? { live: b.live, testRuns: [] } : null) : null;
-  const idle = s?.phase === "waiting";
-  const mine = s ? tracked.filter((t) => t.kind === "swap" && t.batch === s.batch.id) : [];
-  return (
-    <div className="livebatch">
-      <div className="lbh">
-        <div>
-          <div className="id">{idle ? "Next batch" : s ? `Batch ${s.batch.id}` : "Batch"}</div>
-          <div className="pl">{down ? "The server is not answering. Retrying." : idle ? "Opens when someone sends a swap. Every swap sent in the next 20 seconds settles with it, at one price." : s ? phaseLine(s, now) : "Reading the chain."}</div>
-        </div>
-        <div className="cd" title="Seconds until this batch stops taking swaps">{left !== null ? `0:${String(left).padStart(2, "0")}` : ""}</div>
-      </div>
-      <Blind state={state} label={s ? `Batch ${s.batch.id}, ${state}` : "Batch"}>
-        {shown ? <BatchPanel rec={shown} max={3} /> : (
-          <div className="bp">
-            <div className="bp-h"><span>Batch {s?.batch.id ?? ""}</span><span>{s?.phase === "hedging" ? "recording the fills" : "opening from chain data"}</span></div>
-            {mine.map((t) => <div className="bp-r" key={t.postHash}><span className="side">{t.buy ? "Buy" : "Sell"}</span><span className="what">Your order, {t.buy ? `${usd(t.amountIn)} fUSD` : `${eth(t.amountIn)} fETH`}</span><span /></div>)}
-            {!mine.length && <div className="bp-r"><span className="what">Every order in this batch opens at the same moment.</span></div>}
-          </div>
-        )}
-      </Blind>
-      <ol className="strip" aria-label="Batch steps">
-        {STEPS.map((n, i) => <li key={n} className={i < step ? "done" : i === step ? "on" : ""}><span>{n}</span></li>)}
-      </ol>
-      <p className="cap">{state === "open"
-        ? `${shown ? `The last batch, settled ${agoWords(shown.endedAt)}. ` : ""}The blind closes when the next batch takes swaps.`
-        : state === "opening" ? "The price is locked on chain. The blind is opening." : "Closed. Orders in this batch stay sealed until the price is locked."}</p>
-      {s && (step === 5
-        ? <Qc name="x/amm pool 3">the agent rebalances from a separate account, hybrid signed</Qc>
-        : <StepQc i={Math.max(0, step)} />)}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------ account, as a guided stepper
-const GUIDE: { k: (keyof Setup)[]; t: string; d: string; q: [string, string]; tx: string[] }[] = [
-  { k: ["keys"], t: SETUP_TEXT.keys[0], d: SETUP_TEXT.keys[1], q: ["@qorechain/sdk", "a secp256k1 key and an ML-DSA-87 key, both made in this browser"], tx: [] },
-  { k: ["fund"], t: SETUP_TEXT.fund[0], d: SETUP_TEXT.fund[1], q: ["Faucet tokens", "the relayer converts bank coins to ERC-20 with MsgConvertCoin"], tx: ["Funds"] },
-  { k: ["key"], t: SETUP_TEXT.key[0], d: SETUP_TEXT.key[1], q: ["MsgRegisterPQCKeyV2", "your ML-DSA-87 key, with proof of possession. After this every transaction is hybrid signed, and QoreSign checks both halves before the relayer broadcasts"], tx: ["Key registered"] },
-  { k: ["window", "approve"], t: SETUP_TEXT.approve[0], d: "Lets settlement move the tokens you sell, fUSD and fETH only. A short window allows the two approvals.", q: ["Scoped EVM window", "2 transactions within 600 blocks, to fUSD and fETH only, then the two approvals on QoreChain EVM"], tx: ["Window", "Approval 1"] },
-];
-function stOf(setup: Setup, ks: (keyof Setup)[]): StepState {
-  const v = ks.map((k) => setup[k]);
-  if (v.includes("err")) return "err";
-  if (v.includes("run")) return "run";
-  if (v.every((x) => x === "done")) return "done";
-  return "todo";
-}
-
-function AccountPanel(p: { restoring: boolean; acc: UnifiedAccount | null; me: Me | null; setup: Setup; busy: boolean; msg: string; err: string; hashes: { k: string; h: string }[]; onRun: () => void; onRefresh: () => void; onReset: () => void }) {
+// ------------------------------------------------------------------ account chip, in the top bar
+function AccountChip(p: { kind: "burner" | "qorex"; evm: string; me: Me | null; hashes: Hashes; onRefresh: () => void; onReset: () => void; onDisconnect: () => void; onSwitch: () => void; switchBusy: boolean }) {
+  const [open, setOpen] = useState(false);
   const [words, setWords] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const allDone = Object.values(p.setup).every((x) => x === "done");
-  if (p.restoring) return <div className="guide"><div className="stp cur"><div className="stph"><span className="n">1</span><h3>Your test account</h3></div><div className="stpb"><div className="msg">Loading the test account saved in this browser.</div></div></div></div>;
-  const states = GUIDE.map((g) => stOf(p.setup, g.k));
-  const cur = states.findIndex((x) => x !== "done");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) { setWords(false); setConfirmReset(false); return; }
+    const out = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", out); document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("pointerdown", out); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  const { me } = p;
   return (
-    <div className="guide">
-      {GUIDE.map((g, i) => (
-        <div key={g.t} className={`stp ${states[i]} ${i === cur ? "cur" : ""}`}>
-          <div className="stph"><span className="n">{states[i] === "done" ? "✓" : i + 1}</span><h3>{g.t}</h3></div>
-          {(() => {
-            const h = g.tx.map((k) => p.hashes.find((x) => x.k === k)?.h).find(Boolean);
-            return <Qc name={g.q[0]} className="ind" href={h ? txUrl(h) : undefined} link={h ? "your transaction" : undefined}>{g.q[1]}</Qc>;
-          })()}
-          {i === cur && (
-            <div className="stpb">
-              <p>{g.d}</p>
-              <button className="btn day" onClick={p.onRun} disabled={p.busy}>
-                {p.busy ? "Working…" : p.acc ? (p.err ? "Try again" : "Finish setting up") : "Get a test account"}
-              </button>
-              {!p.acc && !p.busy && <p className="dim small">No wallet, no sign up. One button runs steps 1 to 4 in about 30 seconds. The faucet gives each network one test account a day.</p>}
-              {p.msg && <div className="msg">{p.msg}</div>}
-              {p.err && <div className="msg err">{p.err}</div>}
-            </div>
-          )}
-        </div>
-      ))}
-      {allDone && p.msg && <div className="msg">{p.msg}</div>}
-      {p.acc && (
-        <div className="acct">
-          <div className="acctrow">
-            <span className="dim">Test account in this browser</span>
-            <span className="mono">{short(p.acc.evm, 8, 6)} <Copy text={p.acc.evm} /></span>
+    <div className="chipw" ref={ref}>
+      <button className="chip" onClick={() => setOpen((x) => !x)} aria-expanded={open} aria-haspopup="dialog" title="Your account">
+        <span className="chip-bal hideS mono">{me ? `${usd(me.fUSD)} fUSD` : "…"}<i />{me ? `${eth(me.fETH, 4)} fETH` : ""}</span>
+        <span className="chip-a mono">{short(p.evm, 6, 4)}</span>
+        <svg width="10" height="6" viewBox="0 0 10 6" aria-hidden><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+      </button>
+      {open && (
+        <div className="chipm" role="dialog" aria-label="Your account">
+          <div className="cm-h">
+            <span>{p.kind === "qorex" ? "Your QoreX account" : "Test account in this browser"}</span>
+            <span className="mono">{short(p.evm, 8, 6)} <Copy text={p.evm} /></span>
           </div>
-          <div className="bal">
-            <div><b>{p.me ? usd(p.me.fUSD) : "…"}</b><span>fUSD</span></div>
-            <div><b>{p.me ? eth(p.me.fETH, 5) : "…"}</b><span>fETH</span></div>
-            <div><b>{p.me ? (Number(p.me.qor) / 1e6).toFixed(3) : "…"}</b><span>QOR for fees</span></div>
+          <div className="cm-bal">
+            <div><span>fUSD</span><b className="mono">{me ? usd(me.fUSD) : "…"}</b></div>
+            <div><span>fETH</span><b className="mono">{me ? eth(me.fETH, 5) : "…"}</b></div>
+            <div><span>QOR for fees</span><b className="mono">{me ? (Number(me.qor) / 1e6).toFixed(3) : "…"}</b></div>
+            {me && (me.bank.fUSD > 0n || me.bank.fETH > 0n) && <div className="kept"><span>Kept for public swaps</span><b className="mono">{usd(me.bank.fUSD)} fUSD, {eth(me.bank.fETH, 4)} fETH</b></div>}
           </div>
-          <div className="acctlinks">
+          {me && me.fUSD === 0n && me.fETH === 0n && <p className="small dim">No fUSD or fETH here yet. The faucet gives test funds once a day per network.</p>}
+          <div className="cm-links">
             <button className="linkbtn" onClick={p.onRefresh}>Refresh</button>
-            <button className="linkbtn" onClick={() => setWords((x) => !x)}>{words ? "Hide recovery words" : "Show recovery words"}</button>
-            {!confirmReset ? <button className="linkbtn" onClick={() => setConfirmReset(true)}>Start over</button>
-              : <button className="linkbtn warn" onClick={() => { setConfirmReset(false); p.onReset(); }}>Delete this test account from the browser</button>}
+            {p.kind === "burner" && <button className="linkbtn" onClick={() => setWords((x) => !x)}>{words ? "Hide recovery words" : "Show recovery words"}</button>}
+            {p.kind === "burner" && (!confirmReset ? <button className="linkbtn" onClick={() => setConfirmReset(true)}>Start over</button>
+              : <button className="linkbtn warn" onClick={() => { setOpen(false); p.onReset(); }}>Delete this test account from the browser</button>)}
+            {p.kind === "qorex" && <button className="linkbtn" onClick={() => { setOpen(false); p.onDisconnect(); }}>Disconnect</button>}
+            <button className="linkbtn" disabled={p.switchBusy} onClick={() => { setOpen(false); p.onSwitch(); }}>{p.kind === "qorex" ? "Use a test account instead" : "Use my QoreX wallet instead"}</button>
           </div>
           {words && (
             <div>
               <div className="words">{storedWords() ?? "Not saved in this browser."}</div>
-              <p className="small dim">A test account in this browser only. Anyone with these words controls it. Test tokens have no value.</p>
+              <p className="small dim">Anyone with these words controls this test account. Test tokens have no value.</p>
             </div>
           )}
           {p.hashes.length > 0 && (
@@ -370,19 +326,73 @@ function AccountPanel(p: { restoring: boolean; acc: UnifiedAccount | null; me: M
   );
 }
 
-// ------------------------------------------------------------------ QoreX wallet, as the same kind of stepper
-function QorexPanel(p: { restoring: boolean; wallet: QorexConn | null; me: Me | null; s: State | null; onConnected: (w: QorexConn) => void; onRefresh: () => Promise<Me | null> | void; onDisconnect: () => void }) {
+// ------------------------------------------------------------------ getting an account, inside the trade box
+function Progress({ states, labels }: { states: StepState[]; labels: string[] }) {
+  return (
+    <ol className="prog" aria-label="Setup progress">
+      {states.map((st, i) => <li key={labels[i]} className={st}><i /><span>{labels[i]}</span></li>)}
+    </ol>
+  );
+}
+
+const GUIDE: { k: (keyof Setup)[]; t: string; label: string; q: [string, string]; tx: string[] }[] = [
+  { k: ["keys"], t: "Making your keys in this browser.", label: "Keys", q: ["@qorechain/sdk", "a secp256k1 key and an ML-DSA-87 key, both made in this browser"], tx: [] },
+  { k: ["fund"], t: "Getting test funds from the Blind faucet.", label: "Test funds", q: ["Faucet tokens", "15 fUSD and 0.005 fETH for sealed swaps, 6 fUSD and 0.002 fETH for a public swap, and QOR for fees. The relayer converts bank coins to ERC-20 with MsgConvertCoin"], tx: ["Funds"] },
+  { k: ["key"], t: "Registering your signing key on QoreChain.", label: "Signing key", q: ["MsgRegisterPQCKeyV2", "your ML-DSA-87 key, with proof of possession. After this every transaction is hybrid signed, and QoreSign checks both halves before the relayer broadcasts"], tx: ["Key registered"] },
+  { k: ["window", "approve"], t: "Approving fUSD and fETH for trading.", label: "Approvals", q: ["Scoped EVM window", "2 transactions within 600 blocks, to fUSD and fETH only, then the two approvals on QoreChain EVM"], tx: ["Window", "Approval 1"] },
+];
+function stOf(setup: Setup, ks: (keyof Setup)[]): StepState {
+  const v = ks.map((k) => setup[k]);
+  if (v.includes("err")) return "err";
+  if (v.includes("run")) return "run";
+  if (v.every((x) => x === "done")) return "done";
+  return "todo";
+}
+
+function BurnerStart(p: { restoring: boolean; acc: UnifiedAccount | null; setup: Setup; busy: boolean; msg: string; err: string; hashes: Hashes; onRun: () => void; onQorex: () => void }) {
+  if (p.restoring) return <div className="onb"><h2>Your test account</h2><p className="onb-p">Loading the test account saved in this browser.</p></div>;
+  const states = GUIDE.map((g) => stOf(p.setup, g.k));
+  const cur = states.findIndex((x) => x !== "done");
+  const started = !!p.acc || p.busy;
+  const g = cur >= 0 ? GUIDE[cur] : null;
+  const h = g?.tx.map((k) => p.hashes.find((x) => x.k === k)?.h).find(Boolean);
+  return (
+    <div className="onb">
+      <h2>{started ? "Setting up your test account" : "Start trading in 30 seconds"}</h2>
+      <p className="onb-p">{started
+        ? "Four short steps run by themselves. Keep this tab open."
+        : "One button makes a test account in this browser and fills it with test tokens. No wallet, no sign up."}</p>
+      {!started && (
+        <ol className="first3">
+          <li><b>1</b>Make your account. It takes one tap.</li>
+          <li><b>2</b>Buy or sell fETH. Your order is sealed before it leaves this browser.</li>
+          <li><b>3</b>See what you got, next to the same swap sent in public.</li>
+        </ol>
+      )}
+      {started && <Progress states={states} labels={GUIDE.map((x) => x.label)} />}
+      {started && g && <p className="onb-step" role="status">Step {cur + 1} of 4. {p.busy ? p.msg || g.t : p.err ? "This step did not finish." : "Ready to continue."}</p>}
+      {p.err && <div className="msg err">{p.err}</div>}
+      <button className="btn day go" onClick={p.onRun} disabled={p.busy}>
+        {p.busy ? "Working…" : p.acc ? (p.err ? "Try again" : "Finish setting up") : "Make a test account in this browser"}
+      </button>
+      {!p.busy && <button className="btn alt go" onClick={p.onQorex}>Use my QoreX wallet</button>}
+      {!started && <p className="onb-f">Test tokens only. They have no value. The faucet gives each network one test account a day.</p>}
+      {g && <Qc name={g.q[0]} href={h ? txUrl(h) : undefined} link={h ? "your transaction" : undefined}>{g.q[1]}</Qc>}
+    </div>
+  );
+}
+
+function QorexStart(p: { restoring: boolean; wallet: QorexConn | null; me: Me | null; s: State | null; hashes: Hashes; addHash: (k: string, h: string) => void; onConnected: (w: QorexConn) => void; onRefresh: () => Promise<Me | null> | void; onBurner: () => void }) {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
-  const [hashes, setHashes] = useState<{ k: string; h: string }[]>([]);
   const installed = !!qorex();
-  const { wallet: w, me } = p;
+  const { wallet: w, me, hashes } = p;
   const funded = !!me && me.qor > 0n;
   const approved = !!me && me.approved.fUSD && me.approved.fETH;
   const proven = !!me && me.proven;
   const states: StepState[] = [
     w ? "done" : err && busy === "" && !w ? "err" : busy === "connect" ? "run" : "todo",
-    w && funded ? "done" : "todo",
+    w && funded ? "done" : busy === "fund" ? "run" : "todo",
     approved ? "done" : busy === "approve" ? "run" : "todo",
     proven ? "done" : "todo",
   ];
@@ -399,7 +409,7 @@ function QorexPanel(p: { restoring: boolean; wallet: QorexConn | null; me: Me | 
     setErr(""); setBusy("approve");
     try {
       const st = p.s ?? (await api.state());
-      await approveFromQorex(w, st, (k, h) => setHashes((x) => [...x, { k, h }]));
+      await approveFromQorex(w, st, (k, h) => p.addHash(k, h));
       await p.onRefresh();
     } catch (e: any) { setErr(plainQorexError(e)); }
     finally { setBusy(""); }
@@ -409,7 +419,7 @@ function QorexPanel(p: { restoring: boolean; wallet: QorexConn | null; me: Me | 
     setErr(""); setBusy("fund");
     try {
       const r = await api.fund(w.cosmos, w.evm);
-      setHashes((x) => [...x, { k: "Test funds", h: r.hash }]);
+      p.addHash("Test funds", r.hash);
       for (let i = 0; i < 40; i++) { const t = await api.cosmosTx(r.hash).catch(() => null); if (t?.found) break; await new Promise((ok) => setTimeout(ok, 1500)); }
       await p.onRefresh();
     } catch (e: any) { setErr(String(e.message ?? e)); }
@@ -420,31 +430,31 @@ function QorexPanel(p: { restoring: boolean; wallet: QorexConn | null; me: Me | 
     try { await p.onRefresh(); } finally { setBusy(""); }
   }
 
-  const steps: { t: string; q: [string, string]; body: ReactNode; tx?: string }[] = [
+  const steps: { label: string; q: [string, string]; body: ReactNode; tx?: string }[] = [
     {
-      t: "Connect QoreX",
+      label: "Connect",
       q: ["QoreX", "Your QoreX wallet signs your order with your registered ML-DSA-87 key under QoreChain's message domain; the contract checks that signature on chain."],
       body: !installed ? (
         <>
-          <p>QoreX is not installed in this browser.</p>
-          <a className="btn day" href={QOREX_INSTALL_URL} target="_blank" rel="noreferrer">Get QoreX for Chrome</a>
-          <p className="dim small">After installing, reload this page. Or make a test account in this browser instead.</p>
+          <p className="onb-p">QoreX is not installed in this browser. After installing, reload this page.</p>
+          <a className="btn day go" href={QOREX_INSTALL_URL} target="_blank" rel="noreferrer">Get QoreX for Chrome</a>
         </>
       ) : (
         <>
-          <p>Blind asks QoreX for your account on testnet. Use an Ethereum account (coin 60): its 0x and qor1 addresses are the same key, which settlement needs.</p>
-          <button className="btn day" onClick={connect} disabled={!!busy}>{busy === "connect" ? "Waiting for QoreX…" : err ? "Try again" : "Connect QoreX"}</button>
+          <p className="onb-p">Blind asks QoreX for your account on testnet. Use an Ethereum account (coin 60) in QoreX.</p>
+          <button className="btn day go" onClick={connect} disabled={!!busy}>{busy === "connect" ? "Waiting for QoreX…" : err ? "Try again" : "Connect QoreX"}</button>
         </>
       ),
     },
     {
-      t: "Get test funds",
+      label: "Test funds",
       q: ["Blind faucet", "test QOR for fees, fUSD and fETH converted to ERC-20 with MsgConvertCoin, and bank coins for a public swap"],
+      tx: "Test funds",
       body: (
         <>
-          <p>One button sends your QoreX account test QOR for fees, plus Blind's test tokens: fUSD and fETH for sealed swaps and a little more for a public swap. Once a day per network.</p>
-          <div className="acctlinks">
-            <button className="btn day" onClick={getFunds} disabled={!!busy}>{busy === "fund" ? "Sending test funds…" : "Get test funds"}</button>
+          <p className="onb-p">One button sends your QoreX account test QOR for fees, plus fUSD and fETH to trade. Once a day per network.</p>
+          <button className="btn day go" onClick={getFunds} disabled={!!busy}>{busy === "fund" ? "Sending test funds…" : "Get test funds"}</button>
+          <div className="onb-links">
             <a className="linkbtn" href={FAUCET_URL} target="_blank" rel="noreferrer">More QOR from the QoreChain faucet</a>
             <button className="linkbtn" onClick={check} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check again"}</button>
           </div>
@@ -452,69 +462,41 @@ function QorexPanel(p: { restoring: boolean; wallet: QorexConn | null; me: Me | 
       ),
     },
     {
-      t: "Approve the Blind contract",
+      label: "Approvals",
       q: ["Scoped EVM window", "QoreX opens a one transaction window to each token by itself, then sends the approval on QoreChain EVM"],
       tx: "Approval fUSD",
       body: (
         <>
-          <p>Lets settlement move the tokens you sell, fUSD and fETH only. Two approvals in QoreX. If your post quantum key is not on chain yet, QoreX registers it with the first one.</p>
-          <button className="btn day" onClick={approve} disabled={!!busy}>{busy === "approve" ? "Approve in QoreX…" : err ? "Try again" : "Approve in QoreX"}</button>
+          <p className="onb-p">Lets settlement move the tokens you sell, fUSD and fETH only. Two approvals in QoreX.</p>
+          <button className="btn day go" onClick={approve} disabled={!!busy}>{busy === "approve" ? "Approve in QoreX…" : err ? "Try again" : "Approve in QoreX"}</button>
+          {busy === "approve" && <div className="msg">Confirm each approval in the QoreX window. Each one waits for its block.</div>}
         </>
       ),
     },
     {
-      t: "Your post quantum key on chain",
+      label: "Signing key",
       q: ["MsgRegisterPQCKeyV2", "QoreX registers your ML-DSA-87 key with proof of possession; the contract only accepts orders from a proven key"],
       body: (
         <>
-          <p>{me?.registered ? "Your key is on chain without proof of possession, so the contract would refuse your orders. Rotate the key in QoreX, then check again." : "QoreX registers your ML-DSA-87 key with your account's first transaction, and the approvals count. Once they land, check again."}</p>
-          <button className="btn day" onClick={check} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check again"}</button>
+          <p className="onb-p">{me?.registered ? "Your signing key is on chain without proof of possession, so the contract would refuse your orders. Rotate the key in QoreX, then check again." : "QoreX registers your signing key with your account's first transaction, and the approvals count. Once they land, check again."}</p>
+          <button className="btn day go" onClick={check} disabled={!!busy}>{busy === "check" ? "Checking…" : "Check again"}</button>
         </>
       ),
     },
   ];
 
-  if (p.restoring) return <div className="guide"><div className="stp cur"><div className="stph"><span className="n">1</span><h3>Connect QoreX</h3></div><div className="stpb"><div className="msg">Looking for your QoreX account.</div></div></div></div>;
-  const noTokens = !!me && me.fUSD === 0n && me.fETH === 0n && me.bank.fUSD === 0n && me.bank.fETH === 0n;
+  if (p.restoring) return <div className="onb"><h2>Your QoreX wallet</h2><p className="onb-p">Looking for your QoreX account.</p></div>;
+  const g = steps[Math.max(0, cur)];
+  const h = g.tx ? hashes.find((x) => x.k === g.tx)?.h : undefined;
   return (
-    <div className="guide">
-      {steps.map((g, i) => (
-        <div key={g.t} className={`stp ${states[i]} ${i === cur ? "cur" : ""}`}>
-          <div className="stph"><span className="n">{states[i] === "done" ? "✓" : i + 1}</span><h3>{g.t}</h3></div>
-          {(() => {
-            const h = g.tx ? hashes.find((x) => x.k === g.tx)?.h : undefined;
-            return <Qc name={g.q[0]} className="ind" href={h ? txUrl(h) : undefined} link={h ? "your transaction" : undefined}>{g.q[1]}</Qc>;
-          })()}
-          {i === cur && (
-            <div className="stpb">
-              {g.body}
-              {busy === "approve" && i === 2 && <div className="msg">Confirm each approval in the QoreX window. Each one waits for its block.</div>}
-              {err && <div className="msg err">{err}</div>}
-            </div>
-          )}
-        </div>
-      ))}
-      {w && (
-        <div className="acct">
-          <div className="acctrow">
-            <span className="dim">Your QoreX account</span>
-            <span className="mono">{short(w.evm, 8, 6)} <Copy text={w.evm} /></span>
-          </div>
-          <div className="bal">
-            <div><b>{me ? usd(me.fUSD) : "…"}</b><span>fUSD</span></div>
-            <div><b>{me ? eth(me.fETH, 5) : "…"}</b><span>fETH</span></div>
-            <div><b>{me ? (Number(me.qor) / 1e6).toFixed(3) : "…"}</b><span>QOR for fees</span></div>
-          </div>
-          {noTokens && <p className="small dim">No fUSD or fETH yet: use Get test funds above (once a day per network).</p>}
-          <div className="acctlinks">
-            <button className="linkbtn" onClick={check} disabled={!!busy}>Refresh</button>
-            <button className="linkbtn" onClick={p.onDisconnect}>Disconnect</button>
-          </div>
-          {hashes.length > 0 && (
-            <details className="raw"><summary>Setup transactions</summary><div className="rawrows">{hashes.map((x) => <div key={x.h}><span>{x.k}</span><TxLink h={x.h} /></div>)}</div></details>
-          )}
-        </div>
-      )}
+    <div className="onb">
+      <h2>Trade from your QoreX wallet</h2>
+      <Progress states={states} labels={steps.map((x) => x.label)} />
+      <p className="onb-step" role="status">Step {Math.max(0, cur) + 1} of 4</p>
+      {g.body}
+      {err && <div className="msg err">{err}</div>}
+      {!busy && <button className="btn alt go" onClick={p.onBurner}>Make a test account in this browser instead</button>}
+      <Qc name={g.q[0]} href={h ? txUrl(h) : undefined} link={h ? "your transaction" : undefined}>{g.q[1]}</Qc>
     </div>
   );
 }
@@ -562,24 +544,77 @@ function OrderForm(p: { s: State | null; me: Me | null; buy: boolean; setBuy: (b
   );
 }
 
-function SwapBox({ s, acc, me, ready, onPlaced, need }: { need: string; s: State | null; acc: Trader | null; me: Me | null; ready: boolean; onPlaced: (t: Tracked) => void }) {
+
+// ------------------------------------------------------------------ the trade box
+const CMP_KEY = "blind.compare.v1";
+/** First time here the public swap rides along, so the two lanes can be compared. */
+const loadCompare = () => { try { return localStorage.getItem(CMP_KEY) !== "0"; } catch { return true; } };
+
+function TradeBox({ s, acc, me, onDuel, onPlaced }: { s: State | null; acc: Trader; me: Me | null; onDuel: (d: Duel) => void; onPlaced: (t: Tracked) => void }) {
+  const [tab, setTab] = useState<"swap" | "limit">("swap");
+  return (
+    <div className="tbox">
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "swap"} className={tab === "swap" ? "on" : ""} onClick={() => setTab("swap")}>Swap</button>
+        <button role="tab" aria-selected={tab === "limit"} className={tab === "limit" ? "on" : ""} onClick={() => setTab("limit")}>Limit order</button>
+      </div>
+      {tab === "swap"
+        ? <SwapForm s={s} acc={acc} me={me} onDuel={onDuel} onPlaced={onPlaced} />
+        : <LimitBox need="" s={s} acc={acc} me={me} ready onPlaced={onPlaced} />}
+    </div>
+  );
+}
+
+/** One form for a sealed swap. With "compare" on, the same swap also goes out as a plain public swap at the same moment. */
+function SwapForm({ s, acc, me, onDuel, onPlaced }: { s: State | null; acc: Trader; me: Me | null; onDuel: (d: Duel) => void; onPlaced: (t: Tracked) => void }) {
   const [buy, setBuy] = useState(true);
   const [amt, setAmt] = useState("5");
   const [bps, setBps] = useState(400);
+  const [slip, setSlip] = useState(300);
+  const [cmp, setCmpS] = useState<boolean>(loadCompare);
+  const setCmp = (v: boolean) => { setCmpS(v); try { localStorage.setItem(CMP_KEY, v ? "1" : "0"); } catch { /* blocked */ } };
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [sealed, setSealed] = useState<Built | null>(null);
+
+  const unit = buy ? "fUSD" : "fETH";
+  // No public coins of the kind this side spends: the swap goes sealed only.
+  const noBank = !!me && (buy ? me.bank.fUSD : me.bank.fETH) === 0n;
+  const compare = cmp && !noBank;
   const amount = useMemo(() => toUnits(amt, buy ? 6 : 18), [amt, buy]);
   const q = useQuote(buy ? "buy" : "sell", amount);
-  const bal = me ? (buy ? me.fUSD : me.fETH) : 0n;
-  const minOut = s && amount > 0n ? minOutFor(buy, amount, BigInt(s.pool.mid), BigInt(bps)) : null;
-  const outFmt = (v: string | bigint) => (buy ? `${eth(v)} fETH` : `${usd(v)} fUSD`);
+  const outFmt = (v: bigint) => (buy ? `${eth(v, 6)} fETH` : `${usd(v)} fUSD`);
   const amm = q?.plainAmm ? BigInt(q.plainAmm) : null;
   const alone = q ? BigInt(q.blindIfAlone) : null;
-  const block = !acc ? need : !ready ? "Finish setting up your account" : amount <= 0n ? "Enter an amount" : amount > bal ? `Not enough ${buy ? "fUSD" : "fETH"}` : q && !q.withinMakerSize ? "Too large for one batch. Try a smaller amount" : "";
+  const least = amm !== null ? (amm * BigInt(10_000 - slip)) / 10_000n : null;
+  const minOut = s && amount > 0n ? minOutFor(buy, amount, BigInt(s.pool.mid), BigInt(bps)) : null;
+  const sealBal = me ? (buy ? me.fUSD : me.fETH) : 0n;
+  const pubBal = me ? (buy ? me.bank.fUSD : me.bank.fETH) : 0n;
+  const presets = buy ? (compare ? ["2", "5"] : ["2", "5", "10"]) : compare ? ["0.001", "0.0015"] : ["0.001", "0.002", "0.004"];
+  const shortPublic = compare && amount > 0n && amount <= sealBal && amount > pubBal;
+  const block = amount <= 0n ? "Enter an amount"
+    : amount > sealBal ? `Not enough ${unit}`
+    : shortPublic ? `Not enough ${unit} for the public swap`
+    : compare && me && me.qor < 60_000n ? "Not enough QOR for the network fee"
+    : compare && q?.ammRefused ? "Too large for the public pool. Try a smaller amount"
+    : q && !q.withinMakerSize ? "Too large for one batch. Try a smaller amount" : "";
+  const side = (b: boolean) => { setBuy(b); setAmt(b ? "5" : compare ? "0.0015" : "0.002"); };
+  // Start from an amount this account can actually send: the largest quick amount that fits, else what it holds.
+  const fitted = useRef("");
+  useEffect(() => {
+    if (!me) return;
+    const key = `${buy}:${compare}`;
+    if (fitted.current === key) return;
+    fitted.current = key;
+    const cap = compare && pubBal < sealBal ? pubBal : sealBal;
+    if (cap <= 0n || amount <= cap) return;
+    const dec = buy ? 6 : 18, dp = buy ? 2 : 4;
+    const fit = [...presets].reverse().find((x) => toUnits(x, dec) <= cap);
+    const unitDp = 10n ** BigInt(dec - dp);
+    setAmt(fit ?? String(Number(cap / unitDp) / 10 ** dp));
+  }, [!!me, buy, compare]);
 
-  async function go() {
-    if (!acc || block) return;
+  async function goSealed() {
     setErr(""); setSealed(null); setBusy(acc.kind === "qorex" ? "Approve the order signature in QoreX. It is sealed in this browser after." : "Signing and sealing in your browser.");
     try {
       const r = await placeSwap(acc, { buy, amountIn: amount, bps: BigInt(bps) }, (b) => { setSealed(b); setBusy("Sealed. Posting it on chain."); });
@@ -589,22 +624,162 @@ function SwapBox({ s, acc, me, ready, onPlaced, need }: { need: string; s: State
     } catch (e: any) { setErr(e?.message ?? "The order was not placed."); setBusy(""); }
   }
 
+  async function goBoth() {
+    setErr(""); setBusy("Getting the public pool price.");
+    try {
+      const st = s ?? (await api.state());
+      const fresh = await api.quote(buy ? "buy" : "sell", amount);
+      if (!fresh.plainAmm) throw new Error("The public pool refuses this size. Try a smaller amount.");
+      const pubMin = (BigInt(fresh.plainAmm) * BigInt(10_000 - slip)) / 10_000n;
+      const id = String(Date.now());
+      let d: Duel = { id, at: Date.now(), buy, amountIn: amount.toString(), slipBps: slip, mid: st.pool.mid, quoteAmm: fresh.plainAmm, minOut: pubMin.toString() };
+      onDuel(d);
+      setBusy("Sending both at once.");
+      // Fire both lanes in the same tick.
+      const pubP = acc.publicSwap(st, { buy, amountIn: amount, minOut: pubMin })
+        .then((h) => { d = { ...d, publicHash: h }; onDuel(d); })
+        .catch((e) => { d = { ...d, publicErr: e?.message ?? "The public swap was not sent." }; onDuel(d); });
+      const blindP = placeSwap(acc, { buy, amountIn: amount, bps: BigInt(bps) })
+        .then((r) => {
+          const t: Tracked = { kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now(), duel: id };
+          onPlaced(t);
+          d = { ...d, blind: t }; onDuel(d);
+          refreshState();
+        })
+        .catch((e) => { d = { ...d, blindErr: e?.message ?? "The sealed swap was not placed." }; onDuel(d); });
+      await Promise.all([pubP, blindP]);
+      setBusy("");
+    } catch (e: any) { setErr(e?.message ?? "Nothing was sent."); setBusy(""); }
+  }
+  const go = () => { if (block || busy) return; return compare ? goBoth() : goSealed(); };
+
   return (
-    <div>
-      <OrderForm s={s} me={me} buy={buy} setBuy={setBuy} amt={amt} setAmt={setAmt} bps={bps} setBps={setBps} />
-      <div className="compare">
-        <div className="r"><span>Blind, if nobody trades the other side</span><span className="mono">{alone !== null ? outFmt(alone) : "…"}</span></div>
-        <div className="r"><span>x/amm right now, same input</span><span className="mono">{q ? (q.ammRefused ? "refuses this size" : amm !== null ? outFmt(amm) : "…") : "…"}</span></div>
-        <div className="r"><span>The least you accept</span><span className="mono">{minOut !== null ? outFmt(minOut) : "…"}</span></div>
-        <div className="why">Trading alone costs about x/amm plus 0.15%. If others take the other side in your batch, the lighter side gets a much better price than x/amm.</div>
+    <div className="sform">
+      <div className="side" role="radiogroup" aria-label="Side">
+        <button role="radio" aria-checked={buy} className={buy ? "on buy" : ""} onClick={() => side(true)}>Buy</button>
+        <button role="radio" aria-checked={!buy} className={!buy ? "on sell" : ""} onClick={() => side(false)}>Sell</button>
       </div>
-      <button className="btn day go" onClick={go} disabled={!!block || !!busy}>{busy ? "Sealing…" : block || "Seal and send"}</button>
-      {busy && <div className="msg">{busy}</div>}
-      {sealed && busy && <div className="msg small">QoreSeal: {sealed.bytes.toLocaleString("en-US")} bytes sealed with ML-KEM-1024 + X25519, signed with your ML-DSA-87 key.</div>}
+
+      <div className="field">
+        <label><span>{compare ? "You pay, on each side" : "You pay"}</span>
+          {me && <span>{compare ? `Sealed ${buy ? usd(me.fUSD) : eth(me.fETH, 4)}, public ${buy ? usd(me.bank.fUSD) : eth(me.bank.fETH, 4)}` : `Balance ${buy ? usd(me.fUSD) : eth(me.fETH, 5)}`} {unit}</span>}</label>
+        <div className="amt"><input inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value.replace(",", "."))} aria-label={`Amount in ${unit}`} /><span className="u">{unit}</span></div>
+        <div className="chips">{presets.map((x) => <button key={x} className={amt === x ? "on" : ""} onClick={() => setAmt(x)}>{x}</button>)}</div>
+      </div>
+
+      <div className="recv">
+        <span>You receive (estimated)</span>
+        <b className="mono">{alone !== null ? outFmt(alone) : amount > 0n ? "…" : buy ? "0 fETH" : "0 fUSD"}</b>
+        <small>If others trade the other side in your batch, you get more.</small>
+      </div>
+
+      <div className="field lim">
+        <label><span>Your limit, away from the pool price</span><span className="mono">{(bps / 100).toFixed(1)}%</span></label>
+        <input type="range" min={50} max={1000} step={50} value={bps} onChange={(e) => setBps(Number(e.target.value))} aria-label="Limit in percent" />
+        <div className="kv2"><span>The least you accept</span><span className="mono">{minOut !== null ? outFmt(minOut) : "…"}</span></div>
+        <div className="kv2"><span>Public pool pays right now</span><span className="mono">{q ? (q.ammRefused ? "refuses this size" : amm !== null ? outFmt(amm) : "…") : "…"}</span></div>
+      </div>
+
+      <div className={`cmpbox ${compare ? "on" : ""}`}>
+        <label className="cmp">
+          <input type="checkbox" checked={compare} disabled={noBank || !!busy} onChange={(e) => setCmp(e.target.checked)} />
+          <span>Also send it as a public swap, to compare</span>
+        </label>
+        {noBank ? <p>This account has no {unit} left for a public swap, so this one goes sealed only.</p>
+          : compare ? (
+            <>
+              <p>The same swap goes to the public pool at the same moment, so you pay on each side. A bot we run watches that pool.</p>
+              <div className="slip"><span>Public swap slippage</span><div className="chips">{SLIPS.map((x) => <button key={x} className={slip === x ? "on" : ""} onClick={() => setSlip(x)}>{x / 100}%</button>)}</div></div>
+              <div className="kv2"><span>The public swap accepts as little as</span><span className="mono">{least !== null ? outFmt(least) : "…"}</span></div>
+            </>
+          ) : <p>Off: only the sealed swap is sent.</p>}
+      </div>
+
+      <button className={`btn day go ${buy ? "" : "sell"}`} onClick={go} disabled={!!block || !!busy}>{busy ? "Sending…" : block || (buy ? "Buy fETH" : "Sell fETH")}</button>
+      {!busy && !err && <p className="sealnote">{shortPublic ? "Or untick the public swap and send it sealed only." : "Sealed in this browser before it is sent. If the batch price is worse than your limit, nothing moves."}</p>}
+      {busy && <div className="msg" role="status">{busy}</div>}
+      {sealed && busy && <div className="msg small">{sealed.bytes.toLocaleString("en-US")} bytes sealed. Nobody can read the side or the amount.</div>}
       {err && <div className="msg err">{err}</div>}
+      <Qc name="QoreSeal">{STEP_TECH[0].rest}. Posted to BlindSettlement on QoreChain EVM</Qc>
     </div>
   );
 }
+
+// ------------------------------------------------------------------ your orders
+interface OrderItem { id: string; at: number; kind: "both" | "swap" | "limit"; t?: Tracked; d?: Duel }
+
+function orderStatus(t: Tracked | undefined, live: BatchRec[] | null, s: State | null, me: string): { text: string; tone: "" | "pos" | "neg" | "on" } {
+  if (!t) return { text: "Sending", tone: "on" };
+  const got = (f: NonNullable<BatchRec["fills"]>[number]) => {
+    const e = edgeBps(f);
+    return { text: `Got ${f.buy ? `${eth(f.amountOut, 6)} fETH` : `${usd(f.amountOut)} fUSD`}${e === null ? "" : `, ${pct(e)} vs public pool`}`, tone: (e !== null && e < 0 ? "neg" : "pos") as "neg" | "pos" };
+  };
+  if (t.kind === "limit") {
+    for (const r of live ?? []) {
+      const f = (r.fills ?? []).find((x) => x.standing && x.user.toLowerCase() === me && x.amountIn === t.amountIn);
+      if (f) return got(f);
+    }
+    return { text: "Waiting for your price", tone: "on" };
+  }
+  const rec = live?.find((x) => x.batch === t.batch) ?? null;
+  if (rec) {
+    const f = rec.fills?.find((x) => x.user.toLowerCase() === me && x.amountIn === t.amountIn && !x.standing);
+    return f ? got(f) : { text: "Not filled. Nothing moved", tone: "neg" };
+  }
+  if (s && s.batch.id === t.batch && s.phase !== "waiting") {
+    const m: Record<string, string> = { intake: "Sealed, waiting for the batch to close", quoting: "Locking the price", opening: "Price locked", settling: "Settling", hedging: "Settled" };
+    return { text: m[s.phase] ?? "Sealed", tone: "on" };
+  }
+  return { text: "Sealed", tone: "on" };
+}
+
+function YourOrders({ tracked, duel, acc, s, now, live, onSettled }: { tracked: Tracked[]; duel: Duel | null; acc: Trader | null; s: State | null; now: number; live: BatchRec[] | null; onSettled: () => void }) {
+  const items = useMemo(() => {
+    const out: OrderItem[] = tracked.filter((t) => !t.duel).map((t) => ({ id: t.postHash, at: t.at, kind: t.kind, t }));
+    if (duel) out.push({ id: `duel${duel.id}`, at: duel.at, kind: "both", d: duel, t: duel.blind });
+    return out.sort((a, b) => b.at - a.at);
+  }, [tracked, duel]);
+  // The newest order is open; any other opens on a tap.
+  const [picked, setPicked] = useState<string | null | undefined>(undefined);
+  const newest = items[0]?.id;
+  useEffect(() => { setPicked(undefined); }, [newest]);
+  const openId = picked === undefined ? newest : picked;
+  const me = acc?.evm.toLowerCase() ?? "";
+  const when = (t: number) => { const d = new Date(t); const p = (n: number) => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; };
+  return (
+    <>
+      <div className="pnh"><h2>Your orders</h2><span className="pnn">{items.length ? `${items.length} in this browser` : ""}</span></div>
+      {!acc || !items.length ? <p className="bk-empty">{acc ? "No orders yet. Your swaps and their results show here." : "Your swaps and their results show here once you have an account."}</p> : (
+        <div className="ords">
+          <div className="or-cols"><span>Time</span><span>Type</span><span>Order</span><span>Status</span><span /></div>
+          {items.map((it) => {
+            const src = it.d ?? it.t!;
+            const st = orderStatus(it.t, live, s, me);
+            const open = openId === it.id;
+            return (
+              <div className={`orw ${open ? "open" : ""}`} key={it.id}>
+                <button className="or-row" aria-expanded={open} onClick={() => setPicked(open ? null : it.id)}>
+                  <span className="mono dim">{when(it.at)}</span>
+                  <span>{it.kind === "both" ? "Sealed and public" : it.kind === "limit" ? "Limit order" : "Sealed swap"}</span>
+                  <span><b className={src.buy ? "pos" : "neg"}>{src.buy ? "Buy" : "Sell"}</b> {src.buy ? `fETH with ${usd(src.amountIn)} fUSD` : `${eth(src.amountIn, 4)} fETH`}</span>
+                  <span className={`or-st ${st.tone}`}>{it.d?.blindErr ? "The sealed swap was not placed" : st.text}</span>
+                  <svg width="10" height="6" viewBox="0 0 10 6" aria-hidden><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+                </button>
+                {open && (
+                  <div className="ordb">
+                    {it.d ? <DuelView key={it.d.id} d={it.d} acc={acc} s={s} now={now} onSettled={onSettled} />
+                      : <OrderTrack key={it.t!.postHash} t={it.t!} acc={acc} s={s} now={now} onSettled={onSettled} />}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
 
 function LimitBox({ s, acc, me, ready, onPlaced, need }: { need: string; s: State | null; acc: Trader | null; me: Me | null; ready: boolean; onPlaced: (t: Tracked) => void }) {
   const [buy, setBuy] = useState(true);
@@ -650,17 +825,8 @@ function LimitBox({ s, acc, me, ready, onPlaced, need }: { need: string; s: Stat
   );
 }
 
-// ------------------------------------------------------------------ your orders
-function Orders({ tracked, acc, s, now, onSettled }: { tracked: Tracked[]; acc: Trader | null; s: State | null; now: number; onSettled: () => void }) {
-  if (!acc || !tracked.length) return null;
-  return (
-    <div className="orders">
-      <h3 className="colh">Your orders</h3>
-      {tracked.map((t) => <OrderTrack key={t.postHash} t={t} acc={acc} s={s} now={now} onSettled={onSettled} />)}
-    </div>
-  );
-}
 
+// ------------------------------------------------------------------ one order, tracked
 function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Trader; s: State | null; now: number; onSettled: () => void; onRec?: (r: BatchRec) => void; lane?: boolean }) {
   const [rec, setRec] = useState<BatchRec | null>(null);
   const [limitFill, setLimitFill] = useState<{ rec: BatchRec; i: number } | null>(null);
@@ -746,6 +912,7 @@ function Result({ f, rec, lead }: { f: NonNullable<BatchRec["fills"]>[number]; r
   );
 }
 
+
 // ------------------------------------------------------------------ one swap, two lanes
 interface Duel {
   id: string; at: number; buy: boolean; amountIn: string; slipBps: number; mid: string; quoteAmm: string; minOut: string;
@@ -757,90 +924,6 @@ function saveDuel(d: Duel | null) { try { if (d) localStorage.setItem(DUEL_KEY, 
 
 const SLIPS = [100, 300, 500];
 
-function BothBox({ s, acc, me, ready, onDuel, onPlaced, need }: { need: string; s: State | null; acc: Trader | null; me: Me | null; ready: boolean; onDuel: (d: Duel) => void; onPlaced: (t: Tracked) => void }) {
-  const [buy, setBuy] = useState(true);
-  const [amt, setAmt] = useState("5");
-  const [slip, setSlip] = useState(300);
-  const [busy, setBusy] = useState("");
-  const [err, setErr] = useState("");
-  const amount = useMemo(() => toUnits(amt, buy ? 6 : 18), [amt, buy]);
-  const q = useQuote(buy ? "buy" : "sell", amount);
-  const unit = buy ? "fUSD" : "fETH";
-  const outFmt = (v: bigint) => (buy ? `${eth(v, 6)} fETH` : `${usd(v)} fUSD`);
-  const amm = q?.plainAmm ? BigInt(q.plainAmm) : null;
-  const least = amm !== null ? (amm * BigInt(10_000 - slip)) / 10_000n : null;
-  const alone = q ? BigInt(q.blindIfAlone) : null;
-  const pubBal = me ? (buy ? me.bank.fUSD : me.bank.fETH) : 0n;
-  const sealBal = me ? (buy ? me.fUSD : me.fETH) : 0n;
-  const noBank = !!me && me.bank.fUSD === 0n && me.bank.fETH === 0n;
-  const block = !acc ? need : !ready ? "Finish setting up your account"
-    : noBank ? "No coins for the public swap on this account"
-    : amount <= 0n ? "Enter an amount"
-    : amount > pubBal ? `Not enough ${unit} for the public swap`
-    : amount > sealBal ? `Not enough ${unit} for the sealed swap`
-    : me && me.qor < 60_000n ? "Not enough QOR for the network fee"
-    : q?.ammRefused ? "Too large for x/amm. Try a smaller amount"
-    : q && !q.withinMakerSize ? "Too large for one batch. Try a smaller amount" : "";
-
-  async function go() {
-    if (!acc || block) return;
-    setErr(""); setBusy("Getting the x/amm price.");
-    try {
-      const st = s ?? (await api.state());
-      const fresh = await api.quote(buy ? "buy" : "sell", amount);
-      if (!fresh.plainAmm) throw new Error("x/amm refuses this size. Try a smaller amount.");
-      const minOut = (BigInt(fresh.plainAmm) * BigInt(10_000 - slip)) / 10_000n;
-      const id = String(Date.now());
-      let d: Duel = { id, at: Date.now(), buy, amountIn: amount.toString(), slipBps: slip, mid: st.pool.mid, quoteAmm: fresh.plainAmm, minOut: minOut.toString() };
-      onDuel(d);
-      setBusy("Sending both at once.");
-      // Fire both lanes in the same tick.
-      const pubP = acc.publicSwap(st, { buy, amountIn: amount, minOut })
-        .then((h) => { d = { ...d, publicHash: h }; onDuel(d); })
-        .catch((e) => { d = { ...d, publicErr: e?.message ?? "The public swap was not sent." }; onDuel(d); });
-      const blindP = placeSwap(acc, { buy, amountIn: amount, bps: 400n })
-        .then((r) => {
-          const t: Tracked = { kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now(), duel: id };
-          onPlaced(t);
-          d = { ...d, blind: t }; onDuel(d);
-          refreshState();
-        })
-        .catch((e) => { d = { ...d, blindErr: e?.message ?? "The sealed swap was not placed." }; onDuel(d); });
-      await Promise.all([pubP, blindP]);
-      setBusy("");
-    } catch (e: any) { setErr(e?.message ?? "Nothing was sent."); setBusy(""); }
-  }
-
-  return (
-    <div>
-      <p className="note">One swap, sent two ways at the same moment: a plain public swap on x/amm, and a sealed swap on Blind. A bot we run watches the public mempool.</p>
-      <div className="seg" role="radiogroup" aria-label="Side">
-        <button className={buy ? "on" : ""} onClick={() => { setBuy(true); setAmt("5"); }}>Buy fETH</button>
-        <button className={!buy ? "on" : ""} onClick={() => { setBuy(false); setAmt("0.0015"); }}>Sell fETH</button>
-      </div>
-      <div className="field">
-        <label><span>You pay, on each side</span>{me && <span>Public {buy ? usd(me.bank.fUSD) : eth(me.bank.fETH, 4)}, sealed {buy ? usd(me.fUSD) : eth(me.fETH, 4)} {unit}</span>}</label>
-        <div className="amt"><input inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value.replace(",", "."))} aria-label={`Amount in ${unit}`} /><span className="u">{unit}</span></div>
-        <div className="chips">{(buy ? ["2", "5"] : ["0.001", "0.0015"]).map((x) => <button key={x} className={amt === x ? "on" : ""} onClick={() => setAmt(x)}>{x}</button>)}</div>
-      </div>
-      <div className="field">
-        <label><span>Slippage on the public swap</span></label>
-        <div className="chips">{SLIPS.map((x) => <button key={x} className={slip === x ? "on" : ""} onClick={() => setSlip(x)}>{x / 100}%</button>)}</div>
-        <div className="small dim slipnote">{slip === 300 ? "3% is a common setting on swap screens. A bot can take up to this much." : `A bot can take up to ${slip / 100}% of a public swap set like this.`}</div>
-      </div>
-      <div className="compare">
-        <div className="r"><span>x/amm pays right now</span><span className="mono">{q ? (q.ammRefused ? "refuses this size" : amm !== null ? outFmt(amm) : "…") : "…"}</span></div>
-        <div className="r"><span>The public swap accepts as little as</span><span className="mono">{least !== null ? outFmt(least) : "…"}</span></div>
-        <div className="r"><span>Blind, if nobody trades the other side</span><span className="mono">{alone !== null ? outFmt(alone) : "…"}</span></div>
-        <div className="why">Your sealed swap keeps Blind's usual 4% limit. Nobody can read it, so nobody can take it.</div>
-      </div>
-      <button className="btn day go" onClick={go} disabled={!!block || !!busy}>{busy ? "Sending…" : block || "Send it both ways"}</button>
-      {busy && <div className="msg">{busy}</div>}
-      {noBank && <div className="msg small">{acc?.kind === "qorex" ? "Your QoreX account holds no fUSD or fETH coins for the public swap. Use Sealed only." : "This test account was made before the public lane existed. Use Sealed only, or start over with a new account tomorrow."}</div>}
-      {err && <div className="msg err">{err}</div>}
-    </div>
-  );
-}
 
 const usdOf = (buy: boolean, v: bigint, mid: string) => (buy ? (Number(v) / 1e18) * (Number(mid) / 1e6) : Number(v) / 1e6);
 const fusd = (x: number) => `${Math.abs(x).toFixed(Math.abs(x) < 0.1 ? 3 : 2)} fUSD`;

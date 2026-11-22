@@ -32,8 +32,25 @@ export interface Batches {
 export interface Envelope { batch: number; version: number; txHash: string; bytes: number; hexHead: string }
 export interface Quote { side: string; amountIn: string; mid: string; blindIfAlone: string; withinMakerSize: boolean; plainAmm: string | null; ammRefused: boolean }
 
+/** The pool price over time and each settled batch's price. Prices are fUSD per fETH; times are ms. */
+export interface Market { mid: number | null; since: number | null; series: [number, number][]; batches: [number, number, number?][] }
+/** The open batch as the chain shows it: sealed orders by size and time, and the locked price once there is one. */
+export interface CurrentBatch {
+  id: number | null; phase: Phase; closesAt: number | null;
+  posts: { hash: string; block: number; bytes: number | null; at: number | null }[];
+  commit: { block: number; bid: string; ask: string } | null;
+}
+
+/** How far this device's clock is from the server's, in ms, read from response headers. Countdowns add it. */
+let skew = 0;
+export const clockSkew = () => skew;
+
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
+  const t0 = Date.now();
   const r = await fetch(url, init);
+  const d = Date.parse(r.headers.get("date") ?? "");
+  // The header has whole seconds, so small gaps are noise; only a clock that is really off is corrected.
+  if (Number.isFinite(d)) { const off = d + 500 - (t0 + Date.now()) / 2; skew = Math.abs(off) > 2500 ? off : 0; }
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error((body as any).error ?? `HTTP ${r.status}`), { status: r.status });
   return body as T;
@@ -44,6 +61,8 @@ export const api = {
   state: () => j<State>("/api/state"),
   batches: () => j<Batches>("/api/batches"),
   batchesV1: () => j<BatchRec[]>("/api/batches/v1"),
+  market: () => j<Market>("/api/market"),
+  currentBatch: () => j<CurrentBatch>("/api/batch/current"),
   agent: () => j<AgentInfo>("/api/agent"),
   bot: () => j<BotStats>("/api/bot"),
   /** The first bytes of the newest sealed order posted on chain (404 until there is one). */

@@ -209,8 +209,9 @@ export function Curve({ rec }: { rec: BatchRec | null }) {
 function Nav({ path }: { path: string }) {
   const { s } = useLive();
   const open = s && s.phase !== "waiting";
+  const app = path === "/app" || path === "/app/";
   return (
-    <nav className="nav">
+    <nav className={`nav ${app ? "app" : ""}`}>
       <div className="navin">
         <Link to="/" className="brand" aria-label="Blind home"><Logo /></Link>
         <div className="links">
@@ -219,14 +220,16 @@ function Nav({ path }: { path: string }) {
           <a href={REPO} target="_blank" rel="noreferrer" className="l hideS">GitHub</a>
         </div>
         <div className="right">
-          {path !== "/" && (
+          {/* On the trading screen the pair bar carries the batch status, and the account chip mounts here. */}
+          {app && <span id="navacct" className="navacct" />}
+          {path !== "/" && !app && (
             <span className="live" title="Live batch status">
               <span className={`dot ${open ? "on" : ""}`} />
               <span className="hideS">{s ? (open ? `Batch ${s.batch.id} live` : "Next batch ready") : "Connecting"}</span>
             </span>
           )}
           <ThemeToggle />
-          {path !== "/app" && <Link to="/app" className="navcta">Try it</Link>}
+          {!app && <Link to="/app" className="navcta">Try it</Link>}
         </div>
       </div>
     </nav>

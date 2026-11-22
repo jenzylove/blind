@@ -16,6 +16,7 @@ import { makeQuote, clearingPrice, cpOut, SCALE } from "../src/agent/policy.ts";
 import { BatchLoop } from "./loop.ts";
 import { relayCheck } from "./relay.ts";
 import { SandwichBot } from "./bot.ts";
+import { MarketSampler, seedFrom, batchDots, priceOf } from "./market.ts";
 
 const [op, agent, hedger] = await Promise.all([account("OPERATOR"), account("AGENT"), account("HEDGER")]);
 const dep = state.read();
@@ -35,6 +36,14 @@ const botAcc = await account("BOT" as any).catch(() => null);
 const bot = botAcc ? new SandwichBot(botAcc, `${process.env.DATA_DIR ?? "data"}/bot.json`) : null;
 if (bot && process.env.BOT !== "off") bot.start().catch((e) => console.log(`[bot] failed to start: ${e.message}`));
 
+// The pool price, sampled every 30 seconds for the trading screen's chart (server/market.ts). Read only.
+const market = new MarketSampler(
+  `${process.env.DATA_DIR ?? "data"}/market.json`,
+  async () => { const p = await readPool(); return priceOf((p.quote * SCALE) / p.base); },
+  () => seedFrom(loop.records),
+);
+if (process.env.MARKET !== "off") market.start(30_000);
+
 const FUND = {
   uqor: process.env.FUND_UQOR ?? "450000",                  // 0.45 QOR: key registration, one window, two approvals, one public swap
   fUSD: process.env.FUND_FUSD ?? "15000000",                // 15 fUSD
@@ -46,6 +55,7 @@ const FUND = {
 const funded = new Map<string, number>(); // ip or address -> last funded ms
 let fundedToday = { day: new Date().toISOString().slice(0, 10), n: 0 };
 
+const SEALED_EVENT = parseAbi(["event Sealed(uint64 indexed batch, uint32 index, bytes envelope)"]);
 const app = new Hono();
 // The host's proxy appends the real client address last; earlier entries are whatever the client sent.
 const ip = (c: any) => c.req.header("x-forwarded-for")?.split(",").pop()?.trim() || c.req.header("x-real-ip") || "local";
@@ -79,6 +89,41 @@ app.get("/api/state", async (c) => {
     pool: { id: 3, base: pool.base.toString(), quote: pool.quote.toString(), mid: ((pool.quote * SCALE) / pool.base).toString() },
     standingOpen: loop.standing.length,
   });
+});
+
+// ------------------------------------------------------------------ market data for the trading screen (read only)
+/** The pool price over the last three days, and each settled batch's price on the current contract. */
+app.get("/api/market", (c) => {
+  const series = market.series();
+  return c.json({ mid: market.mid, since: series[0]?.[0] ?? null, series, batches: batchDots(loop.records) });
+});
+
+/** The open batch as the chain shows it: each sealed order's size in bytes and when it was posted, and the
+ *  market maker's price once it is locked. No side, no amount: nobody can read those yet. */
+const sealedMeta = new Map<string, { bytes: number | null; at: number | null }>();
+async function sealedInfo(hash: Hex, block: number) {
+  const hit = sealedMeta.get(hash);
+  if (hit) return hit;
+  const [rc, blk] = await Promise.all([
+    pub.getTransactionReceipt({ hash }).catch(() => null),
+    pub.getBlock({ blockNumber: BigInt(block) }).catch(() => null),
+  ]);
+  const ev = rc ? parseEventLogs({ abi: SEALED_EVENT, logs: rc.logs.filter((l) => l.address.toLowerCase() === settlement.toLowerCase()) })[0] : null;
+  const v = { bytes: ev ? ((ev.args.envelope as Hex).length - 2) / 2 : null, at: blk ? Number(blk.timestamp) * 1000 : null };
+  if (v.bytes !== null && v.at !== null) { sealedMeta.set(hash, v); if (sealedMeta.size > 400) sealedMeta.delete(sealedMeta.keys().next().value!); }
+  return v;
+}
+app.get("/api/batch/current", async (c) => {
+  const cur = loop.current;
+  if (!cur) return c.json({ id: null, phase: loop.phase, closesAt: null, posts: [], commit: null });
+  const posts = await Promise.all(cur.posts.map(async (p: any) => ({ hash: p.hash, block: p.block, ...(await sealedInfo(p.hash as Hex, p.block)) })));
+  // The committed curve, read from the contract once the market maker has locked it.
+  let commit: { block: number; bid: string; ask: string } | null = null;
+  if (loop.phase !== "intake") {
+    const b = await engine.read<any[]>("batches", [BigInt(cur.id)]).catch(() => null);
+    if (b && Number(b[1]) > 0) commit = { block: Number(b[1]), bid: String(b[6]), ask: String(b[7]) };
+  }
+  return c.json({ id: cur.id, phase: loop.phase, closesAt: cur.closesAt, posts, commit });
 });
 
 // ------------------------------------------------------------------ the public-swap bot
@@ -174,7 +219,6 @@ app.get("/api/batches", (c) => c.json({
 }));
 // The first bytes of the newest sealed order on the current contract, read back from its Sealed event.
 // The landing shows these so a visitor sees exactly what a bot reading the chain gets.
-const SEALED_EVENT = parseAbi(["event Sealed(uint64 indexed batch, uint32 index, bytes envelope)"]);
 let envCache: { at: number; v: { batch: number; version: number; txHash: string; bytes: number; hexHead: string } | null } | null = null;
 app.get("/api/envelope/latest", async (c) => {
   if (!envCache || Date.now() - envCache.at > 60_000) {
