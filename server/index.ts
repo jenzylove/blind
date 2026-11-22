@@ -14,6 +14,7 @@ import { fetchSpendingRules, fetchAuthenticators } from "@qorechain/sdk";
 import { toHex } from "viem";
 import { makeQuote, clearingPrice, cpOut, SCALE } from "../src/agent/policy.ts";
 import { BatchLoop } from "./loop.ts";
+import { relayCheck } from "./relay.ts";
 import { SandwichBot } from "./bot.ts";
 
 const [op, agent, hedger] = await Promise.all([account("OPERATOR"), account("AGENT"), account("HEDGER")]);
@@ -230,6 +231,8 @@ app.get("/api/cosmos/tx/:hash", async (c) => {
 app.post("/api/cosmos/broadcast", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   if (typeof b.tx_bytes !== "string" || b.tx_bytes.length > 60_000) return bad(c, "tx_bytes (base64) required");
+  const refused = await relayCheck(b.tx_bytes).catch((e) => `could not check the signature: ${String(e.message).slice(0, 100)}`);
+  if (refused) return bad(c, `the relayer will not broadcast this: ${refused}`, 422);
   const r = await fetch(`${NET.rest}/cosmos/tx/v1beta1/txs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tx_bytes: b.tx_bytes, mode: "BROADCAST_MODE_SYNC" }) });
   const j = ((await r.json()) as any).tx_response ?? {};
   return c.json({ hash: j.txhash, code: j.code ?? -1, log: j.raw_log });

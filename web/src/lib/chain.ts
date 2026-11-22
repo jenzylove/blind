@@ -75,18 +75,70 @@ export async function waitCosmos(hash: string, tries = 60) {
   throw new Error("The chain did not confirm the transaction in time. Try again.");
 }
 
-async function signAndSend(acc: UnifiedAccount, mode: "hybrid" | "classical", messages: any[]) {
+async function signAndBroadcast(acc: UnifiedAccount, mode: "hybrid" | "classical", messages: any[], fee = { uqor: "100000", gas: "800000" }) {
   const { accountNumber, sequence } = await api.account(acc.cosmos);
   const signer = new EthNativeSigner(acc, { signMode: mode, rest: rest() });
   const signBytesVersion = mode === "hybrid" ? await signer.resolveSignBytesVersion(CHAIN_ID) : undefined;
   const { txRawBytes } = signer.sign({
     chainId: CHAIN_ID, accountNumber: BigInt(accountNumber), sequence: BigInt(sequence),
-    fee: { amount: [{ denom: "uqor", amount: "100000" }], gas: "800000" }, messages, signBytesVersion,
+    fee: { amount: [{ denom: "uqor", amount: fee.uqor }], gas: fee.gas }, messages, signBytesVersion,
   });
   const b = await api.broadcast(b64(txRawBytes));
   if (!b.hash || (b.code !== 0 && b.code !== undefined)) throw new Error(plainChainError(b.log ?? ""));
-  const r = await waitCosmos(b.hash);
-  return { hash: b.hash, height: r.height };
+  return b.hash;
+}
+
+async function signAndSend(acc: UnifiedAccount, mode: "hybrid" | "classical", messages: any[]) {
+  const hash = await signAndBroadcast(acc, mode, messages);
+  const r = await waitCosmos(hash);
+  return { hash, height: r.height };
+}
+
+// ------------------------------------------------------------------ public lane: a plain x/amm swap, visible in the mempool
+export const POOL_ID = "3";
+export const bankDenom = (address: string) => `erc20:${address}`;
+
+/** Bank balances of the burner's Cosmos side (the coins the public lane spends). */
+export async function bankBalances(acc: UnifiedAccount, s: State) {
+  const b = await fetch(`/api/rest/cosmos/bank/v1beta1/balances/${acc.cosmos}`).then((r) => r.json()).catch(() => ({ balances: [] }));
+  const of = (d: string) => BigInt((b.balances ?? []).find((x: any) => x.denom === d)?.amount ?? "0");
+  return { fUSD: of(bankDenom(s.tokens.fUSD.address)), fETH: of(bankDenom(s.tokens.fETH.address)), qor: of("uqor") };
+}
+
+/** Sign and broadcast a public MsgSwapExactIn on pool 3. Returns as soon as the mempool has it. */
+export async function publicSwap(acc: UnifiedAccount, s: State, p: { buy: boolean; amountIn: bigint; minOut: bigint }) {
+  const F = bankDenom(s.tokens.fUSD.address), E = bankDenom(s.tokens.fETH.address);
+  const msg = { typeUrl: "/qorechain.amm.v1.MsgSwapExactIn", value: {
+    sender: acc.cosmos, poolId: POOL_ID, tokenIn: { denom: p.buy ? F : E, amount: p.amountIn.toString() },
+    denomOut: p.buy ? E : F, minOut: p.minOut.toString(),
+  } };
+  return signAndBroadcast(acc, "hybrid", [msg], { uqor: "50000", gas: "400000" });
+}
+
+/** Wait for a public swap to land and read what the account received from its events. */
+export async function publicSwapResult(hash: string, who: string, denomOut: string) {
+  for (let i = 0; i < 60; i++) {
+    const r = await fetch(`/api/rest/cosmos/tx/v1beta1/txs/${hash}`);
+    if (r.ok) {
+      const t = (await r.json()).tx_response;
+      if (t.code) throw new Error(plainSwapError(t.raw_log ?? ""));
+      const got = (t.events ?? []).filter((e: any) => e.type === "coin_received").flatMap((e: any) => {
+        const at = Object.fromEntries(e.attributes.map((x: any) => [x.key, x.value]));
+        return at.receiver === who && String(at.amount).endsWith(denomOut) ? [BigInt(String(at.amount).slice(0, -denomOut.length))] : [];
+      }).reduce((a: bigint, b: bigint) => a + b, 0n);
+      return { height: Number(t.height), got };
+    }
+    await sleep(1200);
+  }
+  throw new Error("The chain did not confirm the public swap in time.");
+}
+
+function plainSwapError(log: string) {
+  const l = log.toLowerCase();
+  if (l.includes("slippage") || l.includes("min") && l.includes("out")) return "The public swap was refused: the price moved past your slippage before it landed.";
+  if (l.includes("impact")) return "x/amm refused this size (over its 5% impact cap).";
+  if (l.includes("insufficient")) return "Not enough test coins for the public swap.";
+  return plainChainError(log);
 }
 
 export async function fund(acc: UnifiedAccount) {

@@ -7,7 +7,8 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { decodeAbiParameters, keccak256, toHex, hexToBytes, type Hex } from "viem";
-import { pqcSign, pqcVerify, type UnifiedAccount } from "@qorechain/sdk";
+import { pqcSign, type UnifiedAccount } from "@qorechain/sdk";
+import { mldsa87 } from "@qorechain/pqc";
 import { evmWindowStatus } from "@qorechain/evm";
 import { open as openEnvelope, sealKeysFromSeed, recipientOf } from "@qorechain/qoreseal";
 import { pub, send, windowMsg, NET, artifact } from "../src/chain.ts";
@@ -132,7 +133,7 @@ export class BatchLoop {
     const key = await this.engine.read<Hex>("keyOf", [o.user]).catch(() => null);
     if (!key) throw new Error("the order's account has no proven post quantum key on chain");
     const msg = await this.engine.read<Hex>("orderMessage", [o]);
-    if (!pqcVerify(hexToBytes(key), hexToBytes(msg), hexToBytes(sig))) throw new Error("the order's signature does not verify");
+    if (!mldsa87.verify(hexToBytes(key), hexToBytes(msg), hexToBytes(sig))) throw new Error("the order's signature does not verify");
     const r = await this.submit(envelope);
     this.standing.push({ o, sig, postedTx: r.hash, hash });
     this.saveStanding();

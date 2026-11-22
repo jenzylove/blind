@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, type BatchRec } from "../lib/api";
 import { price, blockNo, summarize, pct, inLabel, outLabel, usd, ago, type Summary } from "../lib/fmt";
-import { Edge, usePoll, navigate, Link, SlatGlyph } from "../ui";
+import { Edge, usePoll, navigate, Link, SlatGlyph, attemptIn, attemptOutcome, AttemptLinks } from "../ui";
 
 // Function selectors of BlindSettlement, to show the rule in words.
 const SELECTORS: Record<string, string> = { "0x7368a8ce": "create", "0x5f274211": "post", "0x6225710f": "commit", "0x95329838": "open", "0x75f97094": "settle" };
@@ -10,6 +10,7 @@ export default function Proof() {
   const { v: b, err } = usePoll(api.batches, 10000);
   const { v: v1 } = usePoll(api.batchesV1, 600000);
   const { v: ag } = usePoll(api.agent, 120000);
+  const { v: bot, err: botErr } = usePoll(api.bot, 10000);
   const [filter, setFilter] = useState<"all" | "app" | "test">("all");
   const live = b?.live ?? [];
   const test = b ? [...b.testRuns].reverse() : [];
@@ -33,6 +34,31 @@ export default function Proof() {
         <div><b>{b ? `${cur.better} of ${cur.compared}` : "…"}</b><span>fills beat x/amm</span></div>
         <div><b>{b && cur.markoutUsd !== null ? `${cur.markoutUsd >= 0 ? "+" : "−"}${Math.abs(cur.markoutUsd).toFixed(3)}` : "…"}</b><span>market maker result in fUSD, 30 blocks after each batch</span></div>
       </div>
+
+      <section className="vfix" id="bot">
+        <h2>The bot's record</h2>
+        <p>We run this bot ourselves on testnet so you can see what happens to a public swap. It has its own account, reads only the public mempool, and attacks every public swap on this pool. Sealed Blind orders give it nothing to read.</p>
+        <div className="figs three">
+          <div><b>{bot ? bot.tried : "…"}</b><span>public swaps it went after</span></div>
+          <div><b>{bot ? `${bot.hits} of ${bot.tried}` : "…"}</b><span>times it got ahead</span></div>
+          <div><b>{bot ? (bot.avgLossBps !== null ? `${(bot.avgLossBps / 100).toFixed(2)}%` : "none yet") : "…"}</b><span>average loss it caused when it got ahead</span></div>
+        </div>
+        {botErr && !bot && <p className="dim">The bot's record is not answering. Retrying.</p>}
+        {bot && (
+          <div className="atks">
+            {bot.recent.slice(0, 12).map((a) => (
+              <div className="atk" key={a.victimHash}>
+                <span className="when">{ago(a.at)}</span>
+                <span className="what">{attemptIn(a)}</span>
+                <span className={`oc ${a.order === "bot first" ? "hit" : ""}`}>{attemptOutcome(a)}</span>
+                <AttemptLinks a={a} />
+              </div>
+            ))}
+            {!bot.recent.length && <div className="empty">No public swaps on the pool yet. <Link to="/app">Send one both ways</Link> and watch it here.</div>}
+          </div>
+        )}
+        {bot && <p className="small dim">Bot account <span className="mono">{bot.account}</span></p>}
+      </section>
 
       <section className="vfix">
         <h2>The agent's leash, read from the chain</h2>

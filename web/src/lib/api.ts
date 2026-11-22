@@ -43,6 +43,17 @@ export const api = {
   batches: () => j<Batches>("/api/batches"),
   batchesV1: () => j<BatchRec[]>("/api/batches/v1"),
   agent: () => j<AgentInfo>("/api/agent"),
+  bot: () => j<BotStats>("/api/bot"),
+  /** The bot's record of one public swap, or null until the bot has seen it. Read from /api/bot so a miss is not a 404. */
+  botAttempt: async (victimHash: string): Promise<Attempt | null> => {
+    const b = await j<BotStats>("/api/bot");
+    const h = victimHash.toUpperCase();
+    const a = b.recent.find((x) => x.victimHash === h);
+    if (a || b.recent.length < 30) return a ?? null;
+    // Pushed off the recent list by newer swaps: ask for it directly.
+    const r = await fetch(`/api/bot/attempt/${h}`);
+    return r.ok ? r.json() : null;
+  },
   batch: (id: number) => j<BatchRec>(`/api/batch/${id}`),
   quote: (side: "buy" | "sell", amount: bigint) => j<Quote>(`/api/quote?side=${side}&amount=${amount}`),
   me: (evm: string) => j<{ fUSD: string; fETH: string; approved: { fUSD: boolean; fETH: boolean } }>(`/api/me/${evm}`),
@@ -69,3 +80,13 @@ export interface AgentInfo {
   key: { pubkeyHex: string; expiryUnix: string; label: string; revoked: boolean; permissions: string[] } | null;
   rules: { rules: { id: string; perTxLimit: string; dailyLimit: string; allowedDenoms: string[]; enabled: boolean; allowedEvmCalls: string[] }[] };
 }
+
+/** One public swap the bot saw in the mempool, and what it did. */
+export interface Attempt {
+  victimHash: string; victim: string; side: "buy" | "sell"; amountIn: string; minOut: string; at: string;
+  seenMs: number; frontHash?: string; frontIn?: string; backHash?: string;
+  victimHeight?: number; frontHeight?: number; order?: "bot first" | "victim first" | "missed the block";
+  victimGot?: string; victimWouldGet?: string; victimLossBps?: number; botPnl?: string; botPnlDenom?: string;
+  skipped?: string; error?: string;
+}
+export interface BotStats { account: string; tried: number; hits: number; avgLossBps: number | null; recent: Attempt[] }

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { UnifiedAccount } from "@qorechain/sdk";
-import { api, type BatchRec, type Quote, type State } from "../lib/api";
+import { api, type Attempt, type BatchRec, type BotStats, type Quote, type State } from "../lib/api";
 import {
   loadAccount, newAccount, forgetAccount, storedWords, fund, registerKey, openWindow, approveBoth,
-  placeSwap, placeLimit, minOutFor, pub, type Built,
+  placeSwap, placeLimit, minOutFor, pub, publicSwap, publicSwapResult, bankDenom, type Built,
 } from "../lib/chain";
 import { usd, eth, short, blockNo, pct, edgeBps } from "../lib/fmt";
 import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled } from "../ui";
@@ -14,25 +14,32 @@ type StepState = "todo" | "run" | "done" | "err";
 interface Setup { keys: StepState; fund: StepState; key: StepState; window: StepState; approve: StepState }
 const SETUP_TEXT: Record<keyof Setup, [string, string]> = {
   keys: ["Make a test account", "Keys are created in this browser, including your post quantum key."],
-  fund: ["Get test funds", "15 fUSD, 0.005 fETH and 0.35 QOR for fees, from the Blind faucet."],
+  fund: ["Get test funds", "15 fUSD and 0.005 fETH for sealed swaps, 6 fUSD and 0.002 fETH for a public swap, and QOR for fees, from the Blind faucet."],
   key: ["Register your post quantum key", "QoreChain records your signing key so the contract can check your orders."],
   window: ["Open a short EVM window", "Allows two token approvals, to fUSD and fETH only."],
   approve: ["Approve the Blind contract", "Lets settlement move the tokens you sell. Two transactions."],
 };
 
-interface Me { fUSD: bigint; fETH: bigint; qor: bigint; approved: { fUSD: boolean; fETH: boolean }; registered: boolean }
+interface Me { fUSD: bigint; fETH: bigint; qor: bigint; bank: { fUSD: bigint; fETH: bigint }; approved: { fUSD: boolean; fETH: boolean }; registered: boolean }
+
+let tokensP: Promise<State["tokens"]> | null = null;
+const tokens = () => (tokensP ??= api.state().then((x) => x.tokens).catch((e) => { tokensP = null; throw e; }));
 
 async function readMe(acc: UnifiedAccount): Promise<Me> {
-  const [m, p, b] = await Promise.all([
+  const [m, p, b, tk] = await Promise.all([
     api.me(acc.evm),
     api.pqc(acc.cosmos).catch(() => ({ registered: false })),
     fetch(`/api/rest/cosmos/bank/v1beta1/balances/${acc.cosmos}`).then((r) => r.json()).catch(() => ({ balances: [] })),
+    tokens(),
   ]);
-  const qor = BigInt((b.balances ?? []).find((x: any) => x.denom === "uqor")?.amount ?? "0");
-  return { fUSD: BigInt(m.fUSD), fETH: BigInt(m.fETH), qor, approved: m.approved, registered: p.registered };
+  const of = (d: string) => BigInt((b.balances ?? []).find((x: any) => x.denom.toLowerCase() === d.toLowerCase())?.amount ?? "0");
+  return {
+    fUSD: BigInt(m.fUSD), fETH: BigInt(m.fETH), qor: of("uqor"), approved: m.approved, registered: p.registered,
+    bank: { fUSD: of(bankDenom(tk.fUSD.address)), fETH: of(bankDenom(tk.fETH.address)) },
+  };
 }
 
-interface Tracked { kind: "swap" | "limit"; batch: number; postHash: string; postBlock: number; bytes: number; buy: boolean; amountIn: string; minOut: string; expiry?: string; at: number }
+interface Tracked { kind: "swap" | "limit"; batch: number; postHash: string; postBlock: number; bytes: number; buy: boolean; amountIn: string; minOut: string; expiry?: string; at: number; duel?: string }
 const TRACK_KEY = "blind.orders.v1";
 const loadTracked = (): Tracked[] => { try { return JSON.parse(localStorage.getItem(TRACK_KEY) ?? "[]"); } catch { return []; } };
 const saveTracked = (t: Tracked[]) => { try { localStorage.setItem(TRACK_KEY, JSON.stringify(t.slice(0, 12))); } catch { /* blocked */ } };
@@ -48,7 +55,8 @@ export default function Trade() {
   const [busy, setBusy] = useState(false);
   const [hashes, setHashes] = useState<{ k: string; h: string }[]>([]);
   const [tracked, setTracked] = useState<Tracked[]>(loadTracked);
-  const [tab, setTab] = useState<"swap" | "limit">("swap");
+  const [tab, setTab] = useState<"both" | "swap" | "limit">("both");
+  const [duel, setDuel] = useState<Duel | null>(loadDuel);
   const [restoring, setRestoring] = useState(() => !!storedWords());
 
   const refreshMe = useCallback(async (a = acc) => {
@@ -118,7 +126,7 @@ export default function Trade() {
         setHashes((h) => [...h, ...ap.map((x, i) => ({ k: `Approval ${i + 1}`, h: x }))]);
       }
       mark("window", "done"); mark("approve", "done");
-      setSetupMsg("Your test account is ready. Place a sealed swap.");
+      setSetupMsg("Your test account is ready. Send a swap both ways.");
       await refreshMe(a);
     } catch (e: any) {
       mark(cur, "err");
@@ -145,20 +153,24 @@ export default function Trade() {
         <div className="trademain">
           <AccountPanel restoring={restoring} acc={acc} me={me} setup={setup} busy={busy} msg={setupMsg} err={setupErr} hashes={hashes}
             onRun={runSetup} onRefresh={() => refreshMe()}
-            onReset={() => { forgetAccount(); setAcc(null); setMe(null); setHashes([]); setSetup({ keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" }); setTracked([]); saveTracked([]); }} />
+            onReset={() => { forgetAccount(); setAcc(null); setMe(null); setHashes([]); setSetup({ keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" }); setTracked([]); saveTracked([]); setDuel(null); saveDuel(null); }} />
           <div className={`stp ${ready ? "cur" : "later"}`}>
-            <div className="stph"><span className="n">5</span><h3>Place a sealed swap</h3></div>
+            <div className="stph"><span className="n">5</span><h3>Send a swap</h3></div>
             <div className="stpb">
               <div className="tabs" role="tablist">
-                <button role="tab" aria-selected={tab === "swap"} className={tab === "swap" ? "on" : ""} onClick={() => setTab("swap")}>Swap in the next batch</button>
+                <button role="tab" aria-selected={tab === "both"} className={tab === "both" ? "on" : ""} onClick={() => setTab("both")}>Both ways</button>
+                <button role="tab" aria-selected={tab === "swap"} className={tab === "swap" ? "on" : ""} onClick={() => setTab("swap")}>Sealed only</button>
                 <button role="tab" aria-selected={tab === "limit"} className={tab === "limit" ? "on" : ""} onClick={() => setTab("limit")}>Limit order</button>
               </div>
-              {tab === "swap"
-                ? <SwapBox s={s} acc={acc} me={me} ready={ready} onPlaced={placed} />
-                : <LimitBox s={s} acc={acc} me={me} ready={ready} onPlaced={placed} />}
+              {tab === "both"
+                ? <BothBox s={s} acc={acc} me={me} ready={ready} onDuel={(d) => { setDuel(d); saveDuel(d); }} onPlaced={(t) => { addTracked(t); refreshMe(); }} />
+                : tab === "swap"
+                  ? <SwapBox s={s} acc={acc} me={me} ready={ready} onPlaced={placed} />
+                  : <LimitBox s={s} acc={acc} me={me} ready={ready} onPlaced={placed} />}
             </div>
           </div>
-          <Orders tracked={tracked} acc={acc} s={s} now={now} onSettled={() => refreshMe()} />
+          {acc && duel && <DuelView key={duel.id} d={duel} acc={acc} s={s} now={now} onSettled={() => refreshMe()} />}
+          <Orders tracked={tracked.filter((t) => !t.duel)} acc={acc} s={s} now={now} onSettled={() => refreshMe()} />
         </div>
       </div>
     </div>
@@ -423,7 +435,7 @@ function Orders({ tracked, acc, s, now, onSettled }: { tracked: Tracked[]; acc: 
   );
 }
 
-function OrderTrack({ t, acc, s, onSettled }: { t: Tracked; acc: UnifiedAccount; s: State | null; now: number; onSettled: () => void }) {
+function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: UnifiedAccount; s: State | null; now: number; onSettled: () => void; onRec?: (r: BatchRec) => void; lane?: boolean }) {
   const [rec, setRec] = useState<BatchRec | null>(null);
   const [limitFill, setLimitFill] = useState<{ rec: BatchRec; i: number } | null>(null);
   const me = acc.evm.toLowerCase();
@@ -434,7 +446,7 @@ function OrderTrack({ t, acc, s, onSettled }: { t: Tracked; acc: UnifiedAccount;
         if (rec) return;
         const b = await api.batches().catch(() => null);
         const r = b?.live.find((x) => x.batch === t.batch) ?? null;
-        if (r && on) { setRec(r); onSettled(); }
+        if (r && on) { setRec(r); onRec?.(r); onSettled(); }
       } else {
         if (limitFill) return;
         const b = await api.batches().catch(() => null);
@@ -477,9 +489,9 @@ function OrderTrack({ t, acc, s, onSettled }: { t: Tracked; acc: UnifiedAccount;
   ];
   return (
     <div className="track">
-      <div className="trackh"><b>{sideLine}</b><span className="dim">batch {t.batch}</span></div>
-      <Blind state={rec ? "open" : step === 3 || step === 4 ? "opening" : "closed"} flat className="small">
-        {rec && mine >= 0 ? <Result f={rec.fills![mine]} rec={rec} />
+      {!lane && <div className="trackh"><b>{sideLine}</b><span className="dim">batch {t.batch}</span></div>}
+      <Blind state={rec ? "open" : step === 3 || step === 4 ? "opening" : "closed"} flat={!lane} className={lane ? "lane" : "small"} label={lane ? `Your sealed swap, batch ${t.batch}` : undefined}>
+        {rec && mine >= 0 ? <Result f={rec.fills![mine]} rec={rec} lead={lane ? `The bot saw a sealed envelope: ${t.bytes.toLocaleString("en-US")} bytes, the same size as every other order, no side, no amount.` : undefined} />
           : rec ? <div className="res"><div className="big">Not filled</div><div className="vs">{dropped ? `Left out: ${dropped.reason}. Nothing moved from your account.` : rec.error ? "The batch stopped before settling. Nothing moved from your account." : "Your order was not in this settlement. Nothing moved from your account."}</div></div>
           : <div className="res"><div className="k">Sealed</div><div className="vs">Opens after the market maker's price is locked on chain.</div></div>}
       </Blind>
@@ -490,19 +502,239 @@ function OrderTrack({ t, acc, s, onSettled }: { t: Tracked; acc: UnifiedAccount;
   );
 }
 
-function Result({ f, rec }: { f: NonNullable<BatchRec["fills"]>[number]; rec: BatchRec }) {
+function Result({ f, rec, lead }: { f: NonNullable<BatchRec["fills"]>[number]; rec: BatchRec; lead?: string }) {
   const e = edgeBps(f);
   const out = f.buy ? `${eth(f.amountOut, 6)} fETH` : `${usd(f.amountOut)} fUSD`;
   const amm = f.buy ? `${eth(f.plainAmm, 6)} fETH` : `${usd(f.plainAmm)} fUSD`;
   return (
     <div className="res">
-      <div className="k">You received</div>
+      {lead && <p className="lead2">{lead}</p>}
+      <div className="k">{lead ? "You got, at the batch price" : "You received"}</div>
       <div className="big">{out}</div>
       <div className="vs">
         {e === null ? "x/amm would have refused this size (over its 5% impact cap)."
           : <>x/amm would have paid {amm} for the same input. <b className={e >= 0 ? "pos" : "neg"}>{e >= 0 ? `${pct(e)} better` : `${pct(e)} worse`}</b> with Blind.</>}
       </div>
       <div className="foot2">Batch price {(Number(rec.settle!.price) / 1e6).toFixed(2)} fUSD per fETH. <TxLink h={rec.settle?.hash} label="Settlement" /> <Link to={`/batch/${rec.batch}`}>See the whole batch</Link></div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ one swap, two lanes
+interface Duel {
+  id: string; at: number; buy: boolean; amountIn: string; slipBps: number; mid: string; quoteAmm: string; minOut: string;
+  publicHash?: string; publicErr?: string; blind?: Tracked; blindErr?: string;
+}
+const DUEL_KEY = "blind.duel.v1";
+function loadDuel(): Duel | null { try { return JSON.parse(localStorage.getItem(DUEL_KEY) ?? "null"); } catch { return null; } }
+function saveDuel(d: Duel | null) { try { if (d) localStorage.setItem(DUEL_KEY, JSON.stringify(d)); else localStorage.removeItem(DUEL_KEY); } catch { /* blocked */ } }
+
+const SLIPS = [100, 300, 500];
+
+function BothBox({ s, acc, me, ready, onDuel, onPlaced }: { s: State | null; acc: UnifiedAccount | null; me: Me | null; ready: boolean; onDuel: (d: Duel) => void; onPlaced: (t: Tracked) => void }) {
+  const [buy, setBuy] = useState(true);
+  const [amt, setAmt] = useState("5");
+  const [slip, setSlip] = useState(300);
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const amount = useMemo(() => toUnits(amt, buy ? 6 : 18), [amt, buy]);
+  const q = useQuote(buy ? "buy" : "sell", amount);
+  const unit = buy ? "fUSD" : "fETH";
+  const outFmt = (v: bigint) => (buy ? `${eth(v, 6)} fETH` : `${usd(v)} fUSD`);
+  const amm = q?.plainAmm ? BigInt(q.plainAmm) : null;
+  const least = amm !== null ? (amm * BigInt(10_000 - slip)) / 10_000n : null;
+  const alone = q ? BigInt(q.blindIfAlone) : null;
+  const pubBal = me ? (buy ? me.bank.fUSD : me.bank.fETH) : 0n;
+  const sealBal = me ? (buy ? me.fUSD : me.fETH) : 0n;
+  const noBank = !!me && me.bank.fUSD === 0n && me.bank.fETH === 0n;
+  const block = !acc ? "Get a test account first" : !ready ? "Finish setting up your account"
+    : noBank ? "No coins for the public swap on this account"
+    : amount <= 0n ? "Enter an amount"
+    : amount > pubBal ? `Not enough ${unit} for the public swap`
+    : amount > sealBal ? `Not enough ${unit} for the sealed swap`
+    : me && me.qor < 60_000n ? "Not enough QOR for the network fee"
+    : q?.ammRefused ? "Too large for x/amm. Try a smaller amount"
+    : q && !q.withinMakerSize ? "Too large for one batch. Try a smaller amount" : "";
+
+  async function go() {
+    if (!acc || block) return;
+    setErr(""); setBusy("Getting the x/amm price.");
+    try {
+      const st = s ?? (await api.state());
+      const fresh = await api.quote(buy ? "buy" : "sell", amount);
+      if (!fresh.plainAmm) throw new Error("x/amm refuses this size. Try a smaller amount.");
+      const minOut = (BigInt(fresh.plainAmm) * BigInt(10_000 - slip)) / 10_000n;
+      const id = String(Date.now());
+      let d: Duel = { id, at: Date.now(), buy, amountIn: amount.toString(), slipBps: slip, mid: st.pool.mid, quoteAmm: fresh.plainAmm, minOut: minOut.toString() };
+      onDuel(d);
+      setBusy("Sending both at once.");
+      // Fire both lanes in the same tick.
+      const pubP = publicSwap(acc, st, { buy, amountIn: amount, minOut })
+        .then((h) => { d = { ...d, publicHash: h }; onDuel(d); })
+        .catch((e) => { d = { ...d, publicErr: e?.message ?? "The public swap was not sent." }; onDuel(d); });
+      const blindP = placeSwap(acc, { buy, amountIn: amount, bps: 400n })
+        .then((r) => {
+          const t: Tracked = { kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now(), duel: id };
+          onPlaced(t);
+          d = { ...d, blind: t }; onDuel(d);
+          refreshState();
+        })
+        .catch((e) => { d = { ...d, blindErr: e?.message ?? "The sealed swap was not placed." }; onDuel(d); });
+      await Promise.all([pubP, blindP]);
+      setBusy("");
+    } catch (e: any) { setErr(e?.message ?? "Nothing was sent."); setBusy(""); }
+  }
+
+  return (
+    <div>
+      <p className="note">One swap, sent two ways at the same moment: a plain public swap on x/amm, and a sealed swap on Blind. A bot we run watches the public mempool.</p>
+      <div className="seg" role="radiogroup" aria-label="Side">
+        <button className={buy ? "on" : ""} onClick={() => { setBuy(true); setAmt("5"); }}>Buy fETH</button>
+        <button className={!buy ? "on" : ""} onClick={() => { setBuy(false); setAmt("0.0015"); }}>Sell fETH</button>
+      </div>
+      <div className="field">
+        <label><span>You pay, on each side</span>{me && <span>Public {buy ? usd(me.bank.fUSD) : eth(me.bank.fETH, 4)}, sealed {buy ? usd(me.fUSD) : eth(me.fETH, 4)} {unit}</span>}</label>
+        <div className="amt"><input inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value.replace(",", "."))} aria-label={`Amount in ${unit}`} /><span className="u">{unit}</span></div>
+        <div className="chips">{(buy ? ["2", "5"] : ["0.001", "0.0015"]).map((x) => <button key={x} className={amt === x ? "on" : ""} onClick={() => setAmt(x)}>{x}</button>)}</div>
+      </div>
+      <div className="field">
+        <label><span>Slippage on the public swap</span></label>
+        <div className="chips">{SLIPS.map((x) => <button key={x} className={slip === x ? "on" : ""} onClick={() => setSlip(x)}>{x / 100}%</button>)}</div>
+        <div className="small dim slipnote">{slip === 300 ? "3% is a common setting on swap screens. A bot can take up to this much." : `A bot can take up to ${slip / 100}% of a public swap set like this.`}</div>
+      </div>
+      <div className="compare">
+        <div className="r"><span>x/amm pays right now</span><span className="mono">{q ? (q.ammRefused ? "refuses this size" : amm !== null ? outFmt(amm) : "…") : "…"}</span></div>
+        <div className="r"><span>The public swap accepts as little as</span><span className="mono">{least !== null ? outFmt(least) : "…"}</span></div>
+        <div className="r"><span>Blind, if nobody trades the other side</span><span className="mono">{alone !== null ? outFmt(alone) : "…"}</span></div>
+        <div className="why">Your sealed swap keeps Blind's usual 4% limit. Nobody can read it, so nobody can take it.</div>
+      </div>
+      <button className="btn day go" onClick={go} disabled={!!block || !!busy}>{busy ? "Sending…" : block || "Send it both ways"}</button>
+      {busy && <div className="msg">{busy}</div>}
+      {noBank && <div className="msg small">This test account was made before the public lane existed. Use Sealed only, or start over with a new account tomorrow.</div>}
+      {err && <div className="msg err">{err}</div>}
+    </div>
+  );
+}
+
+const usdOf = (buy: boolean, v: bigint, mid: string) => (buy ? (Number(v) / 1e18) * (Number(mid) / 1e6) : Number(v) / 1e6);
+const fusd = (x: number) => `${Math.abs(x).toFixed(Math.abs(x) < 0.1 ? 3 : 2)} fUSD`;
+
+function attemptDone(a: Attempt) {
+  return !!(a.skipped || a.error || a.botPnl !== undefined || (a.order && !a.backHash && a.order !== "bot first"));
+}
+
+function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: UnifiedAccount; s: State | null; now: number; onSettled: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [res, setRes] = useState<{ height: number; got: bigint } | null>(null);
+  const [pubErr, setPubErr] = useState("");
+  const [att, setAtt] = useState<Attempt | null>(null);
+  const [attGaveUp, setAttGaveUp] = useState(false);
+  const [stats, setStats] = useState<BotStats | null>(null);
+  const [blindRec, setBlindRec] = useState<BatchRec | null>(null);
+  const out = (v: bigint | string, dp = 6) => (d.buy ? `${eth(v, dp)} fETH` : `${usd(v, dp > 6 ? 4 : 2)} fUSD`);
+  const inLbl = d.buy ? `${usd(d.amountIn)} fUSD` : `${eth(d.amountIn, 4)} fETH`;
+
+  useEffect(() => { if (Date.now() - d.at < 4000) ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }, []);
+
+  // The public swap: wait for its block and read what arrived.
+  useEffect(() => {
+    if (!d.publicHash) return;
+    let on = true;
+    tokens().then((tk) => publicSwapResult(d.publicHash!, acc.cosmos, bankDenom(d.buy ? tk.fETH.address : tk.fUSD.address)))
+      .then((r) => { if (on) { setRes(r); onSettled(); } })
+      .catch((e) => on && setPubErr(e?.message ?? "The public swap did not land."));
+    return () => { on = false; };
+  }, [d.publicHash]);
+
+  // What the bot did with it, from the bot's own record.
+  useEffect(() => {
+    if (!d.publicHash) return;
+    let on = true, t: number | undefined;
+    const go = async () => {
+      const a = await api.botAttempt(d.publicHash!).catch(() => null);
+      if (!on) return;
+      if (a) setAtt(a);
+      if (a && attemptDone(a)) { api.bot().then((x) => on && setStats(x)).catch(() => undefined); return; }
+      if (Date.now() - d.at > 150_000) { setAttGaveUp(true); return; }
+      t = window.setTimeout(go, 2000);
+    };
+    go();
+    api.bot().then((x) => on && setStats(x)).catch(() => undefined);
+    return () => { on = false; clearTimeout(t); };
+  }, [d.publicHash]);
+
+  const done = att ? attemptDone(att) : false;
+  const would = att?.victimWouldGet ? BigInt(att.victimWouldGet) : BigInt(d.quoteAmm);
+  const hit = att?.order === "bot first" && !!res;
+  const took = res ? would - res.got : null;
+  const lossBps = att?.victimLossBps ?? (took !== null && would > 0n ? Number((took * 10_000n) / would) : null);
+  const record = stats ? `It gets ahead about ${stats.hits} of ${stats.tried} times` : "It does not always get ahead";
+  const sameBlock = !!att?.frontHeight && att.frontHeight === att.victimHeight;
+
+  let story: ReactNode = null;
+  if (res && att && done) {
+    if (hit) story = <>Without the bot you would have got {out(would)}. The bot bought ahead of you {sameBlock ? "in the same block" : "a block earlier"} and sold right after: it took {out(took!, 7)} ({((lossBps ?? 0) / 100).toFixed(2)}%).</>;
+    else if (att.order === "missed the block") story = <>The bot saw your swap but landed a block late this time. {record}: <Link to="/proof#bot">see its record</Link>.</>;
+    else if (att.order === "victim first") story = <>The bot saw your swap but landed behind it in the same block this time. {record}: <Link to="/proof#bot">see its record</Link>.</>;
+    else if (att.skipped) story = <>The bot saw your swap and passed: {att.skipped}. A tighter slippage leaves it less to take. {record}: <Link to="/proof#bot">see its record</Link>.</>;
+    else story = <>The bot tried to get ahead and its trade failed this time. {record}: <Link to="/proof#bot">see its record</Link>.</>;
+  } else if (res && attGaveUp && !att) {
+    story = <>The bot did not pick up this swap. It handles one swap at a time and may have been busy. <Link to="/proof#bot">See its record</Link>.</>;
+  }
+
+  // One line in fUSD: what each lane gave up against a clean x/amm swap at its own moment.
+  const mine = blindRec?.fills?.find((f) => f.user.toLowerCase() === acc.evm.toLowerCase() && f.amountIn === d.amountIn && !f.standing);
+  let compare: string | null = null;
+  if (res && done && mine && BigInt(mine.plainAmm) > 0n) {
+    const pubLoss = usdOf(d.buy, would - res.got, d.mid);
+    const blindEdge = usdOf(d.buy, BigInt(mine.amountOut) - BigInt(mine.plainAmm), d.mid);
+    compare = `Against a clean x/amm swap at the same moment, the public swap ${pubLoss > 0.0005 ? `lost ${fusd(pubLoss)} to the bot` : "lost nothing to the bot this time"}, and the sealed swap ${blindEdge >= 0 ? `came out ${fusd(blindEdge)} ahead` : `gave up ${fusd(blindEdge)}`}.`;
+  }
+
+  return (
+    <div className="duel" ref={ref}>
+      <h3 className="colh">Your swap, both ways: {d.buy ? "buy fETH with" : "sell"} {inLbl}</h3>
+
+      <section className="lanep">
+        <div className="laneh"><b>Public swap on x/amm</b><span>In full daylight. Anyone watching the mempool reads it.</span></div>
+        <div className="daylane">
+          <div className="ord">
+            <div><span>Side</span><b>{d.buy ? "Buy fETH" : "Sell fETH"}</b></div>
+            <div><span>Amount</span><b>{inLbl}</b></div>
+            <div><span>Least accepted</span><b>{out(d.minOut)}</b></div>
+            <div><span>From</span><b>{short(acc.cosmos, 8, 4)}</b></div>
+          </div>
+          <div className="dres res">
+            {d.publicErr || pubErr ? <p className="neg">{d.publicErr || pubErr}</p>
+              : !d.publicHash ? <p>Signing your public swap.</p>
+              : !res ? <p>In the public mempool, waiting for the next block. The bot can read every line above.</p>
+              : <>
+                <div className="k">You got</div>
+                <div className="big">{out(res.got)}</div>
+                {story ? <p>{story}</p> : <p>Reading what the bot did with your swap.</p>}
+                {hit && att?.botPnl && <p className="small">The bot kept {att.botPnlDenom === "fETH" ? `${eth(att.botPnl, 7)} fETH` : `${usd(att.botPnl, 4)} fUSD`} after its round trip on the pool.</p>}
+              </>}
+            <div className="foot2">
+              {att?.frontHash && <TxLink h={att.frontHash} label="The bot's buy" />}
+              {d.publicHash && <TxLink h={d.publicHash} label="Your swap" />}
+              {att?.backHash && <TxLink h={att.backHash} label="The bot's sell" />}
+              {res && <span className="mono">Block {blockNo(res.height)}</span>}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="lanep">
+        <div className="laneh"><b>Sealed swap on Blind</b><span>Behind the slats until the price is locked.</span></div>
+        {d.blindErr ? <div className="msg err">{d.blindErr}</div>
+          : !d.blind ? <div className="msg">Sealing in your browser.</div>
+          : <>
+            {!blindRec && <p className="lanecap">Posted on chain as {d.blind.bytes.toLocaleString("en-US")} bytes of sealed data. No side, no amount. It opens when batch {d.blind.batch} settles, in about a minute.</p>}
+            <OrderTrack t={d.blind} acc={acc} s={s} now={now} onSettled={onSettled} onRec={setBlindRec} lane />
+          </>}
+      </section>
+
+      {compare && <p className="verdict">{compare}</p>}
     </div>
   );
 }

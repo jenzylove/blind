@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type BatchRec, type Batches } from "../lib/api";
+import { api, type BatchRec, type Batches, type BotStats } from "../lib/api";
 import { short, blockNo, summarize, pct, inLabel, price, ago } from "../lib/fmt";
-import { Link, Edge, usePoll, useReveal, navigate, latestSettled, SlatGlyph, STEPS } from "../ui";
+import { Link, Edge, usePoll, useReveal, navigate, latestSettled, SlatGlyph, STEPS, attemptIn, attemptOut, AttemptLinks } from "../ui";
 import Blind, { type BlindState } from "../Blind";
 import BatchPanel from "../BatchPanel";
 
 export default function Landing() {
   const { v: b } = usePoll(api.batches, 15000);
   const rec = useMemo(() => latestSettled(b), [b]);
+  const { v: bot } = usePoll(api.bot, 20000);
   useReveal();
   return (
     <>
       <Hero rec={rec} />
-      <Problem rec={rec} />
+      <Problem rec={rec} bot={bot} />
       <How rec={rec} />
       <ProofSec b={b} />
       <Limits />
@@ -88,30 +89,37 @@ function SecHead({ n, title, lead, id }: { n: string; title: string; lead?: stri
   );
 }
 
-function Problem({ rec }: { rec: BatchRec | null }) {
-  const f = rec?.fills?.[0];
+function Problem({ rec, bot }: { rec: BatchRec | null; bot: BotStats | null }) {
+  const a = bot?.recent.find((x) => x.order === "bot first" && x.victimLossBps != null && x.victimGot && x.victimWouldGet) ?? null;
   const bytes = rec?.posts?.find((p) => p.bytes)?.bytes;
-  const lines = f ? [[f.buy ? "Buy fETH with" : "Sell", inLabel(f)], ["From", short(f.user, 6, 4)], ["Waiting in block", blockNo(rec!.posts?.[0]?.block)]] : [];
+  const lines: [string, string][] = a ? [
+    ["A public swap", attemptIn(a)],
+    ["The bot bought ahead", a.frontHeight === a.victimHeight ? `same block, ${blockNo(a.victimHeight)}` : `block ${blockNo(a.frontHeight)}`],
+    ["The swapper got", attemptOut(a, a.victimGot!)],
+    ["Without the bot", attemptOut(a, a.victimWouldGet!)],
+    ["Lost to the bot", `${(a.victimLossBps! / 100).toFixed(2)}%`],
+  ] : [];
   const rows = (
     <div className="ord">
-      {f ? lines.map(([k, v]) => <div key={k}><span>{k}</span><b>{v}</b></div>) : <div><span>Loading a real order</span></div>}
+      {a ? lines.map(([k, v]) => <div key={k}><span>{k}</span><b>{v}</b></div>)
+        : <div><span>{bot ? "No attack recorded yet. Send a public swap from the app and it lands here." : "Reading the bot's latest attack"}</span></div>}
     </div>
   );
   return (
     <section className="sec wrap" id="problem">
-      <SecHead n="01" title="On a normal chain, your swap is public before it lands" lead="A bot reads its size and direction while it waits, trades first, and sells back to you at a worse price. You never see it happen. You just get less." />
+      <SecHead n="01" title="On a normal chain, your swap is public before it lands" lead="A bot reads its size and direction while it waits, buys first, and sells right after you. We run one on QoreChain testnet against every public swap on our pool. This is its latest real attack." />
       <div className="pair rv">
         <div className="pairrow">
-          <p className="pk">What a bot reads on a public chain</p>
+          <p className="pk">What the bot did to a public swap{a ? `, ${ago(a.at)}` : ""}</p>
           <Blind state="open" flat className="small">{rows}</Blind>
+          {a && <p className="pn"><AttemptLinks a={a} /> <Link to="/proof#bot">The bot's full record</Link></p>}
         </div>
         <div className="pairrow">
-          <p className="pk">What anyone reads on Blind, for the same order</p>
+          <p className="pk">What the same bot reads on Blind</p>
           <Blind state="closed" flat className="small">{rows}</Blind>
-          <p className="pn">{bytes ? `${bytes.toLocaleString("en-US")} bytes of sealed data on chain. ` : ""}Nothing about it can be read until the market maker's price is already locked.</p>
+          <p className="pn">{bytes ? `${bytes.toLocaleString("en-US")} bytes of sealed data on chain. ` : ""}No side, no amount, nothing to get ahead of.</p>
         </div>
       </div>
-      <p className="cite rv">Bots reading pending swaps and paying higher fees to trade ahead of them is documented in Daian et al., “Flash Boys 2.0”, IEEE Symposium on Security and Privacy, 2020.</p>
     </section>
   );
 }

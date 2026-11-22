@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type MouseEvent } from "react";
-import { api, type State, type Phase, type Fill, type BatchRec } from "./lib/api";
-import { short, pct, edgeBps, price, blockNo, eth } from "./lib/fmt";
+import { api, type State, type Phase, type Fill, type BatchRec, type Attempt } from "./lib/api";
+import { short, pct, edgeBps, price, blockNo, eth, usd } from "./lib/fmt";
 import { EXPLORER } from "./lib/const";
 import type { BlindState } from "./Blind";
 
@@ -255,4 +255,25 @@ export function Shell({ path, children }: { path: string; children: ReactNode })
     if (h) setTimeout(() => document.getElementById(h)?.scrollIntoView(), 80);
   }, [path]);
   return (<><Nav path={path} /><main>{children}</main><Footer /></>);
+}
+
+// ------------------------------------------------------------------ the bot's attempts, in words
+export const attemptIn = (a: Attempt) => (a.side === "buy" ? `Buy fETH with ${usd(a.amountIn)} fUSD` : `Sell ${eth(a.amountIn, 4)} fETH`);
+export const attemptOut = (a: Attempt, v: string) => (a.side === "buy" ? `${eth(v, 6)} fETH` : `${usd(v)} fUSD`);
+export function attemptOutcome(a: Attempt): string {
+  if (a.order === "bot first") return a.victimLossBps != null ? `Got ahead. The swapper lost ${(a.victimLossBps / 100).toFixed(2)}%` : "Got ahead";
+  if (a.order === "missed the block") return "Landed a block late";
+  if (a.order === "victim first") return "Landed behind the swap";
+  if (a.skipped) return `Passed: ${a.skipped}`;
+  if (a.error) return "Its trade failed";
+  return "Working on it";
+}
+export function AttemptLinks({ a }: { a: Attempt }) {
+  return (
+    <span className="atkl">
+      {a.frontHash && <TxLink h={a.frontHash} label="bot buy" />}
+      <TxLink h={a.victimHash} label="swap" />
+      {a.backHash && <TxLink h={a.backHash} label="bot sell" />}
+    </span>
+  );
 }
