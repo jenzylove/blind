@@ -4,7 +4,7 @@ import type { UnifiedAccount } from "@qorechain/sdk";
 import { api, batchPath, type Attempt, type BatchRec, type BotStats, type CurrentBatch, type Quote, type State } from "../lib/api";
 import {
   loadAccount, newAccount, forgetAccount, storedWords, fund, registerKey, openWindow, approveBoth,
-  placeSwap, placeLimit, minOutFor, pub, publicSwapResult, bankDenom, burnerTrader, type Built, type Trader,
+  placeSwap, placeLimit, minOutFor, pub, publicSwapResult, bankDenom, burnerTrader, resumeReveals, type Built, type Trader,
 } from "../lib/chain";
 import { qorex, connectQorex, approveFromQorex, qorexTrader, plainQorexError, FAUCET_URL, QOREX_INSTALL_URL, type QorexConn } from "../lib/qorex";
 import { usd, eth, short, blockNo, pct, edgeBps } from "../lib/fmt";
@@ -57,6 +57,8 @@ const saveTracked = (t: Tracked[]) => { try { localStorage.setItem(TRACK_KEY, JS
 const NO_SETUP: Setup = { keys: "todo", fund: "todo", key: "todo", window: "todo", approve: "todo" };
 
 export default function Trade() {
+  // Finish any reveal this browser still owes from before a reload.
+  useEffect(() => { resumeReveals(); }, []);
   const { s, down } = useLive();
   // A slow tick for the chart and the order list; the pair bar and the book keep their own faster ones.
   const now = useNow(5000);

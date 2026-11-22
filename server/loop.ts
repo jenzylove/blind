@@ -1,12 +1,14 @@
-// The live batch loop behind the web app.
-// A batch exists on chain only when someone trades: the next batch's public sealing key is
-// published ahead of time (its seed stays secret, its hash goes on chain at create), the first
-// sealed order creates the batch, intake closes INTAKE_MS later, then the agent commits its
-// curve, the seed is revealed in a later block, orders are opened from chain logs, settled
-// in one transaction and hedged on x/amm.
+// The live batch loop behind the web app (contract v4).
+// A batch exists on chain only when someone trades. Users post a fingerprint of their order
+// (keccak256(order, signature hash, salt)); the order itself stays in their browser. After
+// INTAKE_MS the market maker commits its curve from its own leashed account; strictly after the
+// commit block each browser reveals its own order (this server only relays it, after the commit is
+// on chain), and the batch settles in one transaction and is hedged on x/amm.
+// Limit orders are the exception: they wait across batches while their owner is offline, so they are
+// sealed (QoreSeal, ML-KEM-1024) to this operator's standing key and revealed by the operator.
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { decodeAbiParameters, keccak256, toHex, hexToBytes, type Hex } from "viem";
+import { decodeAbiParameters, toHex, hexToBytes, type Hex } from "viem";
 import { pqcSign, type UnifiedAccount } from "@qorechain/sdk";
 import { mldsa87 } from "@qorechain/pqc";
 import { evmWindowStatus } from "@qorechain/evm";
@@ -18,30 +20,27 @@ import { makeQuote, clearingPrice, markout, SCALE, type Curve } from "../src/age
 const { abi } = artifact("BlindSettlement");
 const INTAKE_MS = Number(process.env.INTAKE_MS ?? 20_000);
 const DATA = process.env.DATA_DIR ?? "data";
-// Each contract version numbers its batches from 1, so each keeps its own records.
 const DEP = state.read() as any;
 export const VERSION: number = DEP.version ?? 2;
+export const REVEAL_BLOCKS: number = DEP.revealBlocks ?? 20;
 const STORE = VERSION >= 3 ? `${DATA}/batches-v${VERSION}.json` : `${DATA}/batches.json`;
 const STANDING_STORE = VERSION >= 3 ? `${DATA}/standing-v${VERSION}.json` : `${DATA}/standing.json`;
-const V2_LIVE = `${DATA}/batches.json`;
 const MAX_ORDERS = 32;
 const MAX_STANDING = 40;
-const purposeOf = (settlement: string, id: bigint | number) => `blind-order-v1:${settlement.toLowerCase()}:${id}`;
 export const STANDING_PURPOSE = (settlement: string) => `blind-standing-v1:${settlement.toLowerCase()}`;
 
-export type Phase = "waiting" | "intake" | "quoting" | "opening" | "settling" | "hedging";
+export type Phase = "waiting" | "intake" | "quoting" | "revealing" | "settling" | "hedging";
 
-interface Pending { seed: Uint8Array; publicKey: { mlkem: string; x25519: string } }
-interface Standing { o: Order; sig: Hex; postedTx: string; hash: string }
+interface Standing { o: Order; sig: Hex; hash: string }
+interface Revealed { index: number; o: Order; sig: Hex; standing?: boolean }
 
 export class BatchLoop {
   phase: Phase = "waiting";
-  current: { id: number; createdBlock: number; closesAt: number; seed: Uint8Array; posts: any[] } | null = null;
-  next: Pending;
+  current: { id: number; openBlock: number; closesAt: number; posts: any[]; commitBlock?: number; reveals: any[] } | null = null;
   standing: Standing[] = [];
   records: any[] = [];
-  history: any[] = []; // unattended test runs before the app went live (test trader accounts)
-  earlier: any[] = []; // live app batches on the previous contract version (read only)
+  history: any[] = []; // unattended test runs before the app went live (test trader accounts), v2
+  earlier: any[] = []; // live app batches on earlier contract versions (read only)
   private queue: Promise<unknown> = Promise.resolve();
   private extMoves: bigint[] = [];
   private lastMidAfter: bigint | null = null;
@@ -50,19 +49,18 @@ export class BatchLoop {
 
   constructor(public engine: Engine, standingSeedHex: string) {
     mkdirSync(DATA, { recursive: true });
-    // First boot on a fresh volume: start from the live batches recorded before the move.
     if (existsSync(STORE)) this.records = JSON.parse(readFileSync(STORE, "utf8"));
-    const v2 = DEP.v2?.settlement ?? DEP.settlement;
+    const v2 = DEP.v2?.settlement;
     if (existsSync("deployments/batches-curve.json")) this.history = JSON.parse(readFileSync("deployments/batches-curve.json", "utf8")).filter((r: any) => r.settled).map((r: any) => ({ ...r, version: 2, contract: v2 }));
-    if (VERSION >= 3) {
-      // The previous version's live batches: the volume's file if this host ran them, else the snapshot in the repo.
-      const src = existsSync(V2_LIVE) ? V2_LIVE : "deployments/batches-v2-live.json";
-      if (existsSync(src)) this.earlier = JSON.parse(readFileSync(src, "utf8")).map((r: any) => ({ ...r, version: 2, contract: v2 }));
-    }
-    this.next = this.freshKey();
+    // Earlier versions' live batches: the volume's files if this host ran them, else the snapshots in the repo.
+    const earlier: any[] = [];
+    const v2src = existsSync(`${DATA}/batches.json`) ? `${DATA}/batches.json` : "deployments/batches-v2-live.json";
+    if (existsSync(v2src)) earlier.push(...JSON.parse(readFileSync(v2src, "utf8")).map((r: any) => ({ ...r, version: 2, contract: v2 })));
+    const v3src = existsSync(`${DATA}/batches-v3.json`) ? `${DATA}/batches-v3.json` : "deployments/batches-v3-live.json";
+    if (VERSION >= 4 && existsSync(v3src)) earlier.push(...JSON.parse(readFileSync(v3src, "utf8")).map((r: any) => ({ ...r, version: 3, contract: DEP.v3?.settlement })));
+    this.earlier = earlier;
     this.standingSeed = hexToBytes(standingSeedHex as Hex);
     if (this.standingSeed.length !== 32) throw new Error("STANDING_SEED must be 32 bytes hex");
-    // Limit orders survive a restart.
     if (existsSync(STANDING_STORE)) {
       this.standing = JSON.parse(readFileSync(STANDING_STORE, "utf8")).map((x: any) => ({ ...x,
         o: { ...x.o, batch: BigInt(x.o.batch), expiry: BigInt(x.o.expiry), amountIn: BigInt(x.o.amountIn), minOut: BigInt(x.o.minOut), nonce: BigInt(x.o.nonce) } }));
@@ -75,11 +73,6 @@ export class BatchLoop {
 
   get settlement() { return this.engine.settlement; }
   standingPublicKey() { return pk(sealKeysFromSeed(this.standingSeed)); }
-
-  private freshKey(): Pending {
-    const seed = new Uint8Array(randomBytes(32));
-    return { seed, publicKey: pk(sealKeysFromSeed(seed)) };
-  }
 
   /** Every settler transaction goes through one queue: one nonce stream, no races. */
   serial<T>(f: () => Promise<T>): Promise<T> {
@@ -97,40 +90,68 @@ export class BatchLoop {
     const w = await evmWindowStatus({ rest: NET.rest, address: this.engine.settler.cosmos });
     const remainingTxs = Number((w as any).remainingTxs ?? (w as any).remaining_txs ?? 0);
     const remainingBlocks = Number((w as any).remainingBlocks ?? (w as any).remaining_blocks ?? 0);
-    if (w.found && (w as any).live !== false && remainingTxs > 12 && remainingBlocks > 120) return;
+    if (w.found && (w as any).live !== false && remainingTxs > 20 && remainingBlocks > 120) return;
     await send(this.engine.settler, "hybrid", [windowMsg(this.engine.settler, {
-      blocks: 3000n, maxTxs: 300n, maxValueUqor: 300n * 110_000n, allowedTargets: [this.settlement],
-    })], "settler window: 300 txs / 3000 blocks, target = BlindSettlement only");
+      blocks: 3000n, maxTxs: 400n, maxValueUqor: 400n * 160_000n, allowedTargets: [this.settlement],
+    })], "settler window: 400 txs / 3000 blocks, target = BlindSettlement only");
     await new Promise((ok) => setTimeout(ok, 3000));
   }
 
-  /** A user's sealed order for the current (or next) batch. Returns the post transaction. */
-  async submit(envelope: Hex) {
-    if (envelope.length > 2 + 2 * 8192) throw new Error("envelope too large");
-    // Accepted on arrival: an order that comes in while intake is open goes into this batch even if its
-    // on-chain post waits behind others in the queue. close() queues the commit behind it, so the post
-    // still lands before the price is committed.
-    if (this.phase !== "waiting" && this.phase !== "intake") throw new Error("intake closed; seal to the next batch key and retry");
+  /** Open a batch if none is open (inside the queue). */
+  private async ensureBatch() {
+    if (this.current) return;
+    await this.ensureWindow();
+    const c = await this.engine.tx("open", []);
+    const id = Number(await this.engine.read<bigint>("batchCount", []));
+    this.current = { id, openBlock: c.block, closesAt: Date.now() + INTAKE_MS, posts: [], reveals: [], ...({ open: c } as any) };
+    this.phase = "intake";
+    this.log(`batch ${id} opened (block ${c.block}); intake closes in ${INTAKE_MS / 1000}s`);
+    setTimeout(() => this.close().catch((e) => this.log(`batch ${id} failed: ${e.message}`)), INTAKE_MS);
+  }
+
+  private async postFingerprint(fp: Hex) {
+    const id = BigInt(this.current!.id);
+    const p = await this.engine.tx("post", [id, fp]);
+    const b = (await this.engine.read<any[]>("batches", [id])) as any[];
+    const index = Number(b[4]) - 1; // posted count after this post (one queue: nothing in between)
+    const rec = { ...p, index, fingerprint: fp };
+    this.current!.posts.push(rec);
+    return rec;
+  }
+
+  /** A user's order fingerprint for the current (or next) batch. Accepted on arrival: close() queues the
+   *  commit behind every post that arrived while intake was open. */
+  async submit(fp: Hex) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(fp) || /^0x0+$/.test(fp)) throw new Error("fingerprint: 32 bytes as 0x hex");
+    if (this.phase !== "waiting" && this.phase !== "intake") throw new Error("intake closed; post to the next batch");
     return this.serial(async () => {
-      await this.ensureWindow();
-      if (!this.current) {
-        const { seed, publicKey } = this.next;
-        const c = await this.engine.tx("create", [keccak256(seed)]);
-        const id = Number(await this.engine.read<bigint>("batchCount", []));
-        this.current = { id, createdBlock: c.block, closesAt: Date.now() + INTAKE_MS, seed, posts: [], publicKey } as any;
-        this.next = this.freshKey();
-        this.phase = "intake";
-        this.log(`batch ${id} created (block ${c.block}); intake closes in ${INTAKE_MS / 1000}s`);
-        setTimeout(() => this.close().catch((e) => this.log(`batch ${id} failed: ${e.message}`)), INTAKE_MS);
-        (this.current as any).create = c;
-      }
-      const p = await this.engine.tx("post", [BigInt(this.current.id), envelope]);
-      this.current.posts.push(p);
-      return { batch: this.current.id, hash: p.hash, block: p.block, closesAt: this.current.closesAt };
+      await this.ensureBatch();
+      const r = await this.postFingerprint(fp);
+      return { batch: this.current!.id, index: r.index, hash: r.hash, block: r.block, closesAt: this.current!.closesAt, revealBlocks: REVEAL_BLOCKS };
     });
   }
 
-  /** A standing limit order, sealed to the standing key. Posted on chain in the current batch. */
+  /** The user's browser hands over its order only after the commit is on chain; this server relays it. */
+  async submitReveal(r: { batch: number; index: number; order: Order; sig: Hex; salt: Hex }) {
+    const id = BigInt(r.batch);
+    const b = (await this.engine.read<any[]>("batches", [id])) as any[];
+    const commitBlock = Number(b[1]);
+    if (!commitBlock) throw new Error("the price is not locked yet; reveal after the commit");
+    const head = Number(await pub.getBlockNumber());
+    if (head > commitBlock + REVEAL_BLOCKS) throw new Error("the reveal window for this batch is over");
+    const posted = await this.engine.read<Hex>("fingerprint", [id, BigInt(r.index)]);
+    const fp = await this.engine.read<Hex>("fingerprintOf", [r.order, r.sig, r.salt]);
+    if (posted.toLowerCase() !== fp.toLowerCase()) throw new Error("this order does not match its fingerprint");
+    if ((await this.engine.read<Hex>("revealedAs", [id, BigInt(r.index)])) !== `0x${"0".repeat(64)}`) return { already: true };
+    return this.serial(async () => {
+      while (Number(await pub.getBlockNumber()) <= commitBlock) await new Promise((ok) => setTimeout(ok, 500));
+      const t = await this.engine.tx("reveal", [id, BigInt(r.index), r.order, r.sig, r.salt], 1.3);
+      if (this.current?.id === r.batch) this.current.reveals.push({ index: r.index, ...t, by: "owner" });
+      return t;
+    });
+  }
+
+  /** A standing limit order, sealed to the standing key. It joins every batch until it fills or expires. */
   async submitStanding(envelope: Hex) {
     const keys = sealKeysFromSeed(this.standingSeed);
     const pt = openEnvelope({ chainId: NET.chainId, purpose: STANDING_PURPOSE(this.settlement), envelope: hexToBytes(envelope), keys });
@@ -142,22 +163,23 @@ export class BatchLoop {
     if (this.standing.length >= MAX_STANDING) throw new Error("too many open limit orders right now; try again later");
     const hash = await this.engine.read<Hex>("orderHash", [o]);
     if (this.standing.some((s) => s.hash === hash) || (await this.engine.read<boolean>("used", [hash]))) throw new Error("this order is already in");
-    // The same checks the contract makes at settlement, done now so a bad order can never stall a batch.
     const key = await this.engine.read<Hex>("keyOf", [o.user]).catch(() => null);
     if (!key) throw new Error("the order's account has no proven post quantum key on chain");
     const msg = await this.engine.read<Hex>("signedOrderBytes", [o]);
     if (!mldsa87.verify(hexToBytes(key), hexToBytes(msg), hexToBytes(sig))) throw new Error("the order's signature does not verify");
-    const r = await this.submit(envelope);
-    this.standing.push({ o, sig, postedTx: r.hash, hash });
+    this.standing.push({ o, sig, hash });
     this.saveStanding();
+    if (this.phase !== "waiting" && this.phase !== "intake") return { orderHash: hash, joins: "the next batch" };
+    const r = await this.serial(async () => { await this.ensureBatch(); return { batch: this.current!.id, closesAt: this.current!.closesAt }; });
     return { ...r, orderHash: hash };
   }
 
   /** Simulate settle; on a revert, name the order that causes it. Null when the batch would settle. */
-  private async findBreaker(id: bigint, orders: { o: Order; sig: Hex }[]): Promise<{ index: number; reason: string } | null> {
-    const sim = async (os: { o: Order; sig: Hex }[]) => {
+  private async findBreaker(id: bigint, orders: Revealed[]): Promise<{ index: number; reason: string } | null> {
+    const sim = async (os: Revealed[]) => {
       try {
-        await pub.simulateContract({ account: this.engine.settler.evm as Hex, address: this.settlement, abi, functionName: "settle", args: [id, os.map((x) => x.o), os.map((x) => x.sig)] });
+        await pub.simulateContract({ account: this.engine.settler.evm as Hex, address: this.settlement, abi, functionName: "settle",
+          args: [id, os.map((x) => BigInt(x.index)), os.map((x) => x.o), os.map((x) => x.sig)] });
         return null;
       } catch (e: any) {
         const d = e?.cause?.data ?? e?.data;
@@ -174,58 +196,83 @@ export class BatchLoop {
     if ((all.name === "BadOrder" || all.name === "MinOut") && all.args.length) return { index: Number(all.args[0]), reason: why[all.name] };
     for (let i = 0; i < orders.length; i++) {
       const one = await sim([orders[i]]);
-      if (one && one.name !== "MinOut" && one.name !== "TooBig") return { index: i, reason: why[one.name] ?? `settle would revert (${one.name})` };
+      if (one && one.name !== "MinOut" && one.name !== "TooBig" && one.name !== "BadPhase") return { index: i, reason: why[one.name] ?? `settle would revert (${one.name})` };
     }
+    if (all.name === "BadPhase") return null; // only the timing: wait and settle
     throw new Error(`settle would revert (${all.name}) and no single order explains it`);
   }
 
   private async close() {
     const cur = this.current!;
     const id = BigInt(cur.id);
-    const rec: any = { batch: cur.id, version: VERSION, contract: this.settlement, live: true, startedAt: new Date(cur.closesAt - INTAKE_MS).toISOString(), create: (cur as any).create, posts: cur.posts, dropped: [], curveVersion: 2 };
+    const rec: any = { batch: cur.id, version: VERSION, contract: this.settlement, live: true, startedAt: new Date(cur.closesAt - INTAKE_MS).toISOString(),
+      create: (cur as any).open, posts: cur.posts, reveals: cur.reveals, dropped: [], curveVersion: 2 };
+    const standingIn: { s: Standing; index: number; salt: Hex }[] = [];
     try {
-      // Quote from public data only, before anything can be opened.
       this.phase = "quoting";
+      // Limit orders join this batch as fingerprints too, before the price is locked.
+      const head0 = await pub.getBlockNumber();
+      this.standing = this.standing.filter((s) => s.o.expiry > head0 + BigInt(REVEAL_BLOCKS) + 5n);
+      for (const s of this.standing.slice(0, MAX_ORDERS)) {
+        const salt = toHex(randomBytes(32));
+        const fp = await this.engine.read<Hex>("fingerprintOf", [s.o, s.sig, salt]);
+        const p = await this.serial(() => this.postFingerprint(fp));
+        standingIn.push({ s, index: p.index, salt });
+      }
+
+      // The market maker quotes from public data only, inside the owner's mandate.
       const pool = await readPool();
       const now = (pool.quote * SCALE) / pool.base;
       if (this.lastMidAfter) this.extMoves.push(((now > this.lastMidAfter ? now - this.lastMidAfter : this.lastMidAfter - now) * 10_000n) / this.lastMidAfter);
       const ext = this.extMoves.slice(-5).reduce((a, b) => (b > a ? b : a), 0n);
       const inv = await makerInventory(this.settlement, this.engine.hedger);
       const q = makeQuote(pool, { base: inv.contract.base + inv.hedger.base, quote: inv.contract.quote + inv.hedger.quote }, ext);
-      const curve: Curve = { bid: q.bid, ask: q.ask, bidMax: q.bidMax, askMax: q.askMax, maxNet: q.maxNet };
+      const m = (await this.engine.read<any>("mandate", [])) as any[];
+      const maxNet = q.maxNet < BigInt(m[0]) ? q.maxNet : BigInt(m[0]);
+      const curve: Curve = { bid: q.bid, ask: q.ask, bidMax: q.bidMax, askMax: q.askMax, maxNet };
+      if (!(await this.engine.read<boolean>("withinMandate", [curve]))) throw new Error("the market maker's curve is outside the owner's mandate; no price locked");
       const quoteExpiry = BigInt(Number(await pub.getBlockNumber()) + 300);
       const qmsg = await this.engine.read<Hex>("quoteMessage", [id, curve, quoteExpiry]);
       const qsig = toHex(pqcSign(this.engine.agent.pqc.secretKey, hexToBytes(qmsg)));
       const cm = await this.serial(() => this.engine.tx("commit", [id, curve, quoteExpiry, qsig]));
+      cur.commitBlock = cm.block;
       rec.commit = { ...cm, ...str(curve), mid: q.mid.toString(), marginBps: q.marginBps.toString(), skewBps: q.skewBps.toString(), volBps: q.volBps.toString() };
       this.log(`batch ${id}: curve committed in block ${cm.block}`);
 
-      // Reveal the seed strictly after the commit block.
-      this.phase = "opening";
-      while (Number(await pub.getBlockNumber()) <= cm.block) await new Promise((ok) => setTimeout(ok, 600));
-      const ob = await this.serial(() => this.engine.tx("open", [id, toHex(cur.seed)]));
-      rec.open = { ...ob, seed: toHex(cur.seed) };
-
-      // Open every envelope from chain logs. Standing orders are sealed to the standing key.
-      this.phase = "settling";
-      const logs = (await pub.getContractEvents({ address: this.settlement, abi, eventName: "Sealed", args: { batch: id }, fromBlock: BigInt(cur.createdBlock), toBlock: BigInt(ob.block) })) as any[];
-      const batchKeys = sealKeysFromSeed(cur.seed);
-      let orders: { o: Order; sig: Hex; standing?: boolean }[] = [];
-      for (const l of logs) {
-        try {
-          const pt = openEnvelope({ chainId: NET.chainId, purpose: purposeOf(this.settlement, id), envelope: hexToBytes(l.args.envelope), keys: batchKeys });
-          const [o, sig] = decodeAbiParameters(ORDER_T, toHex(pt)) as unknown as [Order, Hex];
-          orders.push({ o, sig });
-        } catch { /* a standing order (other key) or garbage: skipped here */ }
+      // Reveals: browsers reveal their own orders; the operator reveals the limit orders it holds.
+      this.phase = "revealing";
+      for (const x of standingIn) {
+        while (Number(await pub.getBlockNumber()) <= cm.block) await new Promise((ok) => setTimeout(ok, 500));
+        const t = await this.serial(() => this.engine.tx("reveal", [id, BigInt(x.index), x.s.o, x.s.sig, x.salt], 1.3)).catch((e) => ({ error: String(e.message).slice(0, 120) }));
+        cur.reveals.push({ index: x.index, ...t, by: "operator (limit order)" });
       }
-      const head = BigInt(ob.block);
-      this.standing = this.standing.filter((s) => s.o.expiry >= head);
-      for (const s of this.standing) orders.push({ o: s.o, sig: s.sig, standing: true });
-      rec.opened = orders.length;
+      const until = cm.block + REVEAL_BLOCKS;
+      let b: any[] = [];
+      for (;;) {
+        b = (await this.engine.read<any[]>("batches", [id])) as any[];
+        const head = Number(await pub.getBlockNumber());
+        if (Number(b[5]) >= Number(b[4])) break; // every posted order revealed
+        if (head > until) break;
+        await new Promise((ok) => setTimeout(ok, 1500));
+      }
+      await this.queue; // reveals already queued land first
+      b = (await this.engine.read<any[]>("batches", [id])) as any[];
+      rec.posted = Number(b[4]);
+      rec.revealedCount = Number(b[5]);
+      rec.unrevealed = rec.posted - rec.revealedCount;
 
-      // The same order twice, or one already filled, would make settle revert for everyone: leave it out.
+      // Read the revealed orders from chain events.
+      this.phase = "settling";
+      const logs = (await pub.getContractEvents({ address: this.settlement, abi, eventName: "Revealed", args: { batch: id }, fromBlock: BigInt(cm.block), toBlock: "latest" })) as any[];
+      const standingIdx = new Set(standingIn.map((x) => x.index));
+      let orders: Revealed[] = logs.map((l) => ({ index: Number(l.args.index), o: l.args.order as Order, sig: l.args.signature as Hex, standing: standingIdx.has(Number(l.args.index)) || undefined }));
+      rec.opened = orders.length;
+      // The contract lets the batch settle only once every order is revealed or the window is over.
+      if (rec.unrevealed > 0) while (Number(await pub.getBlockNumber()) <= until) await new Promise((ok) => setTimeout(ok, 700));
+      const head = BigInt(await pub.getBlockNumber());
+
       const seen = new Set<string>();
-      const unique: typeof orders = [];
+      const unique: Revealed[] = [];
       for (const x of orders) {
         const h = (await this.engine.read<Hex>("orderHash", [x.o])).toLowerCase();
         if (seen.has(h)) { rec.dropped.push({ user: x.o.user, reason: "a copy of an order already in this batch", standing: x.standing }); continue; }
@@ -235,7 +282,6 @@ export class BatchLoop {
       orders = unique;
       while (orders.length > MAX_ORDERS) { const x = orders.pop()!; rec.dropped.push({ user: x.o.user, reason: "more than 32 orders in one batch", standing: x.standing }); }
 
-      // Leave out what cannot fill; every drop of a batch order is recorded. Standing orders just wait.
       for (;;) {
         const qi = orders.filter((x) => x.o.buy).reduce((a, x) => a + x.o.amountIn, 0n);
         const bi = orders.filter((x) => !x.o.buy).reduce((a, x) => a + x.o.amountIn, 0n);
@@ -254,8 +300,6 @@ export class BatchLoop {
           if (!orders[k].standing) rec.dropped.push({ user: orders[k].o.user, reason: "batch net larger than the maker's committed size" });
           orders.splice(k, 1); continue;
         }
-        // Dry run the settlement. If one order would make it revert (bad signature, no key, no balance or
-        // allowance), leave that order out with the reason and price the rest again.
         if (orders.length) {
           const brk = await this.findBreaker(id, orders);
           if (brk) {
@@ -269,7 +313,7 @@ export class BatchLoop {
       }
       if (!orders.length) { rec.settled = false; this.log(`batch ${id}: nothing fillable`); return; }
 
-      const st = await this.serial(() => this.engine.tx("settle", [id, orders.map((x) => x.o), orders.map((x) => x.sig)], 1.2));
+      const st = await this.serial(() => this.engine.tx("settle", [id, orders.map((x) => BigInt(x.index)), orders.map((x) => x.o), orders.map((x) => x.sig)], 1.2));
       const ev = ((await pub.getContractEvents({ address: this.settlement, abi, eventName: "Settled", args: { batch: id }, fromBlock: BigInt(st.block), toBlock: BigInt(st.block) })) as any[])[0];
       const fills = (await pub.getContractEvents({ address: this.settlement, abi, eventName: "Filled", args: { batch: id }, fromBlock: BigInt(st.block), toBlock: BigInt(st.block) })) as any[];
       const filledHashes = new Set(fills.map((f) => f.args.orderHash.toLowerCase()));

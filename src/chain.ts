@@ -29,7 +29,7 @@ export function readEnv(path = ".env") {
   }
   return env;
 }
-export const ROLES = ["OPERATOR", "AGENT", "HEDGER", "BOT", "USER1", "USER2"] as const;
+export const ROLES = ["OPERATOR", "AGENT", "HEDGER", "BOT", "OWNER", "MAKER", "USER1", "USER2"] as const;
 // Mnemonics live in a git-ignored env file outside the repo (BLIND_ENV), testnet only.
 const ENV_PATH = process.env.BLIND_ENV ?? ".env";
 export type Role = (typeof ROLES)[number];
@@ -38,7 +38,7 @@ export function ensureKeys() {
   // On a host the keys come from environment variables; never generate fresh ones there.
   for (const r of ROLES) { const k = `${r}_MNEMONIC`; if (process.env[k]) env[k] = process.env[k]!; }
   if (process.env.NODE_ENV === "production") {
-    const missing = ROLES.filter((r) => !env[`${r}_MNEMONIC`] && r !== "USER1" && r !== "USER2");
+    const missing = ROLES.filter((r) => !env[`${r}_MNEMONIC`] && !["USER1", "USER2", "OWNER", "MAKER"].includes(r));
     if (missing.length) throw new Error(`missing ${missing.map((r) => r + "_MNEMONIC").join(", ")}`);
     return env;
   }

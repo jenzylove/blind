@@ -91,7 +91,8 @@ export const api = {
     if (!r.ok) throw new Error(b.error ?? "The faucet did not answer.");
     return b as { hash: string };
   },
-  order: async (envelope: string) => { const r = await post("/api/order", { envelope }); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; },
+  order: async (fingerprint: string) => { const r = await post("/api/order", { fingerprint }); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; },
+  reveal: async (b: { batch: number; index: number; order: Record<string, string | boolean>; signature: string; salt: string }) => { const r = await post("/api/reveal", b); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; },
   limit: async (envelope: string) => { const r = await post("/api/limit", { envelope }); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; },
 };
 
@@ -115,7 +116,7 @@ export interface Attempt {
 export interface BotStats { account: string; tried: number; hits: number; avgLossBps: number | null; recent: Attempt[] }
 
 /** The contract version the app trades on now. Each version numbers its batches from 1. */
-export const CURRENT_VERSION = 3;
+export const CURRENT_VERSION = 4;
 /** Link to a batch's page, naming the contract version when it is not the current one. */
 export const batchPath = (r: { batch: number; version?: number }) =>
   `/batch/${r.batch}${r.version && r.version !== CURRENT_VERSION ? `?v=${r.version}` : ""}`;

@@ -50,14 +50,18 @@ export const agentLinkFrom = (hexSeed?: string): AgentLink | undefined => {
 };
 
 export class Engine {
+  /** The maker account: the only one BlindSettlement v4 accepts commits from. It holds nothing; the agent's
+   *  linked key acts for it, limited on chain to that one call. */
+  maker?: { cosmos: string; evm: Hex };
   constructor(public settlement: Hex, public settler: UnifiedAccount, public agent: UnifiedAccount, public hedger: UnifiedAccount, public link?: AgentLink) {}
 
   async tx(functionName: string, args: any[], margin = 1.25) {
     const data = encodeFunctionData({ abi, functionName, args });
-    const est = await pub.estimateGas({ account: this.settler.evm as Hex, to: this.settlement, data });
+    const viaAgent = functionName === "commit" && !!this.link && !!this.maker;
+    const est = await pub.estimateGas({ account: (viaAgent ? this.maker!.evm : this.settler.evm) as Hex, to: this.settlement, data });
     // The agent's own decision, its price curve, goes through its linked key. Everything else stays on the
     // settler's window: calls through the agent lane emit no EVM logs, and orders and fills must stay public events.
-    if (this.link && functionName === "commit") return this.agentTx(functionName, data, Math.ceil(Number(est) * margin));
+    if (viaAgent) return this.agentTx(functionName, data, Math.ceil(Number(est) * margin));
     const hash = await evmWallet(this.settler).sendTransaction({ to: this.settlement, data, gas: BigInt(Math.ceil(Number(est) * margin)), ...FEES });
     const rc = await pub.waitForTransactionReceipt({ hash });
     if (rc.status !== "success") throw new Error(`${functionName} reverted: ${hash}`);
@@ -68,11 +72,12 @@ export class Engine {
    *  (only BlindSettlement's batch functions). The settler only relays and pays the fee. */
   private async agentTx(functionName: string, data: Hex, gasLimit: number) {
     const link = this.link!;
-    const { nonce } = await fetchAuthNonce({ rest: NET.rest, address: this.settler.cosmos, pubkey: link.pk });
+    const account = this.maker?.cosmos ?? this.settler.cosmos;
+    const { nonce } = await fetchAuthNonce({ rest: NET.rest, address: account, pubkey: link.pk });
     const digestVersion = await resolveEvmAuthDigestVersion({ rest: NET.rest } as any).catch(() => "v2");
     const msg = await buildPhantomExecuteEvm({
       wallet: { publicKey: link.pk, signMessage: async (m: Uint8Array) => ed25519.sign(m, link.sk) },
-      relayer: this.settler.cosmos, chainId: NET.chainId, account: this.settler.cosmos,
+      relayer: this.settler.cosmos, chainId: NET.chainId, account,
       to: this.settlement, value: "0", data: hexToBytes(data), gasLimit, nonce, digestVersion: digestVersion as any,
     });
     const cosmosHash = await broadcast(this.settler, "hybrid", [msg], String(gasLimit + 600_000));

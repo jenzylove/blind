@@ -13,7 +13,7 @@ import { Engine, readPool, makerInventory, agentLinkFrom } from "../src/engine/b
 import { fetchSpendingRules, fetchAuthenticators } from "@qorechain/sdk";
 import { toHex, parseAbi, parseEventLogs } from "viem";
 import { makeQuote, clearingPrice, cpOut, SCALE } from "../src/agent/policy.ts";
-import { BatchLoop } from "./loop.ts";
+import { BatchLoop, REVEAL_BLOCKS } from "./loop.ts";
 import { relayCheck } from "./relay.ts";
 import { SandwichBot } from "./bot.ts";
 import { MarketSampler, seedFrom, batchDots, priceOf } from "./market.ts";
@@ -26,6 +26,7 @@ const settlement = dep.settlement as Hex;
 const agentLink = agentLinkFrom(process.env.AGENT_LINK_KEY ?? readEnv(process.env.BLIND_ENV ?? ".env").AGENT_LINK_KEY);
 if (!agentLink && process.env.NODE_ENV === "production") throw new Error("AGENT_LINK_KEY is required");
 const engine = new Engine(settlement, op, agent, hedger, agentLink);
+if ((dep as any).maker) engine.maker = { cosmos: (dep as any).makerCosmos, evm: (dep as any).maker };
 const STANDING_SEED = process.env.STANDING_SEED ?? readEnv(process.env.BLIND_ENV ?? ".env").STANDING_SEED;
 if (!STANDING_SEED) throw new Error("STANDING_SEED (32 bytes hex) is required");
 const loop = new BatchLoop(engine, STANDING_SEED);
@@ -80,11 +81,12 @@ app.get("/api/state", async (c) => {
   const taking = loop.phase === "waiting" || loop.phase === "intake";
   return c.json({
     chainId: NET.chainId, evmChainId: 9800, evmRpc: NET.evm, contract: settlement, tokens: TOKENS,
-    agent: agent.evm, settler: op.evm, treasury: hedger.evm,
+    agent: agent.evm, settler: op.evm, treasury: hedger.evm, maker: (dep as any).maker ?? null, owner: (dep as any).owner ?? null,
+    version: dep.version ?? 2, revealBlocks: REVEAL_BLOCKS,
     phase: loop.phase,
     batch: cur
-      ? { id: cur.id, taking, closesAt: cur.closesAt, publicKey: (cur as any).publicKey ?? null, created: true }
-      : { id: Number(count) + 1, taking: true, closesAt: null, publicKey: loop.next.publicKey, created: false },
+      ? { id: cur.id, taking, closesAt: cur.closesAt, commitBlock: cur.commitBlock ?? null, revealUntil: cur.commitBlock ? cur.commitBlock + REVEAL_BLOCKS : null, created: true }
+      : { id: Number(count) + 1, taking: true, closesAt: null, commitBlock: null, revealUntil: null, created: false },
     standingKey: loop.standingPublicKey(),
     pool: { id: 3, base: pool.base.toString(), quote: pool.quote.toString(), mid: ((pool.quote * SCALE) / pool.base).toString() },
     standingOpen: loop.standing.length,
@@ -116,14 +118,18 @@ async function sealedInfo(hash: Hex, block: number) {
 app.get("/api/batch/current", async (c) => {
   const cur = loop.current;
   if (!cur) return c.json({ id: null, phase: loop.phase, closesAt: null, posts: [], commit: null });
-  const posts = await Promise.all(cur.posts.map(async (p: any) => ({ hash: p.hash, block: p.block, ...(await sealedInfo(p.hash as Hex, p.block)) })));
+  const posts = await Promise.all(cur.posts.map(async (p: any) => {
+    const blk = await pub.getBlock({ blockNumber: BigInt(p.block) }).catch(() => null);
+    return { hash: p.hash, block: p.block, index: p.index, fingerprint: p.fingerprint, bytes: 32, at: blk ? Number(blk.timestamp) * 1000 : null,
+      revealed: cur.reveals.some((r: any) => r.index === p.index) };
+  }));
   // The committed curve, read from the contract once the market maker has locked it.
   let commit: { block: number; bid: string; ask: string } | null = null;
   if (loop.phase !== "intake") {
     const b = await engine.read<any[]>("batches", [BigInt(cur.id)]).catch(() => null);
     if (b && Number(b[1]) > 0) commit = { block: Number(b[1]), bid: String(b[6]), ask: String(b[7]) };
   }
-  return c.json({ id: cur.id, phase: loop.phase, closesAt: cur.closesAt, posts, commit });
+  return c.json({ id: cur.id, phase: loop.phase, closesAt: cur.closesAt, posts, commit, revealUntil: cur.commitBlock ? cur.commitBlock + REVEAL_BLOCKS : null });
 });
 
 // ------------------------------------------------------------------ the public-swap bot
@@ -186,12 +192,26 @@ app.get("/api/quote", async (c) => {
 });
 
 // ------------------------------------------------------------------ orders
+/** A swap enters a batch as a fingerprint only: keccak256(order, signature hash, salt). */
 app.post("/api/order", async (c) => {
   const lim = postLimited(c); if (lim) return bad(c, lim, 429);
   const b = await c.req.json().catch(() => ({}));
-  if (!isHex(b.envelope) || b.envelope.length < 200) return bad(c, "envelope: sealed order as 0x hex");
-  try { return c.json(await loop.submit(b.envelope as Hex)); }
+  if (!isHex(b.fingerprint) || b.fingerprint.length !== 66) return bad(c, "fingerprint: 32 bytes as 0x hex");
+  try { return c.json(await loop.submit(b.fingerprint as Hex)); }
   catch (e: any) { return bad(c, e.message, 409); }
+});
+
+/** After the price is locked on chain, the browser hands over its order; it is checked against its
+ *  fingerprint and relayed to the contract's reveal. */
+app.post("/api/reveal", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const o = b.order ?? {};
+  if (!Number.isInteger(b.batch) || !Number.isInteger(b.index) || !isHex(b.signature) || !isHex(b.salt) || b.salt.length !== 66) return bad(c, "batch, index, order, signature, salt");
+  try {
+    const order = { user: o.user as Hex, batch: BigInt(o.batch), expiry: BigInt(o.expiry), buy: !!o.buy, amountIn: BigInt(o.amountIn), minOut: BigInt(o.minOut), nonce: BigInt(o.nonce) };
+    const r = await loop.submitReveal({ batch: b.batch, index: b.index, order, sig: b.signature as Hex, salt: b.salt as Hex });
+    return c.json(r);
+  } catch (e: any) { return bad(c, e.message, 409); }
 });
 
 app.post("/api/limit", async (c) => {
@@ -217,27 +237,14 @@ app.get("/api/batches", (c) => c.json({
     ],
   },
 }));
-// The first bytes of the newest sealed order on the current contract, read back from its Sealed event.
-// The landing shows these so a visitor sees exactly what a bot reading the chain gets.
-let envCache: { at: number; v: { batch: number; version: number; txHash: string; bytes: number; hexHead: string } | null } | null = null;
+// The newest posted order on the current contract, as the chain holds it before the price is locked:
+// a 32 byte fingerprint. The landing shows it so a visitor sees exactly what a bot reading the chain gets.
 app.get("/api/envelope/latest", async (c) => {
-  if (!envCache || Date.now() - envCache.at > 60_000) {
-    let v: NonNullable<typeof envCache>["v"] = null;
-    for (const r of [...loop.records].reverse().slice(0, 5)) {
-      const h = r.posts?.[0]?.hash as Hex | undefined;
-      if (!h) continue;
-      try {
-        const rc = await pub.getTransactionReceipt({ hash: h });
-        const ev = parseEventLogs({ abi: SEALED_EVENT, logs: rc.logs.filter((l) => l.address.toLowerCase() === settlement.toLowerCase()) })[0];
-        if (!ev) continue;
-        const env = ev.args.envelope as Hex;
-        v = { batch: r.batch, version: dep.version ?? 2, txHash: h, bytes: (env.length - 2) / 2, hexHead: env.slice(2, 162) };
-        break;
-      } catch { /* try the next batch */ }
-    }
-    envCache = { at: Date.now(), v };
+  for (const r of [loop.current, ...[...loop.records].reverse().slice(0, 10)]) {
+    const p = (r as any)?.posts?.[0];
+    if (p?.fingerprint) return c.json({ batch: (r as any).id ?? (r as any).batch, version: dep.version ?? 2, txHash: p.hash, bytes: 32, fingerprint: p.fingerprint, hexHead: String(p.fingerprint).slice(2) });
   }
-  return envCache.v ? c.json(envCache.v) : bad(c, "no sealed order on the current contract yet", 404);
+  return bad(c, "no order posted on the current contract yet", 404);
 });
 
 // The first version's test runs (flat quote, before the curve fix), read only, for the proof page.

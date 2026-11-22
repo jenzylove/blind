@@ -1,13 +1,13 @@
 {
   "chainId": 9800,
-  "settlement": "0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e",
-  "deployTx": "0x9d80450bd3e236510032b4a744321bf07da44114bc5fab084c105b2047f403ad",
+  "settlement": "0x036701960d6e42e6d167222a917405ba3315a79b",
+  "deployTx": "0xb3a6f164ed0073d5dc616030dce35c11f63cfc3fd173a8b4047d6dc23fbea193",
   "base": "fETH",
   "quote": "fUSD",
   "agent": "0x98b7426ea53F18Ad4FcC11B52a3B8d008C02308e",
   "settler": "0xe203D8214722f17101ab85648ec900bb91fbe891",
   "treasury": "0x95763489fF56D3ac6dBc34d1BF3c72ccb7487E4A",
-  "settleWindowBlocks": 600,
+  "settleWindowBlocks": 300,
   "v1": {
     "chainId": 9800,
     "settlement": "0x4906cbdec09a89bd71aeccaf6e0b450c5a9cecc1",
@@ -82,7 +82,7 @@
       }
     ]
   },
-  "version": 3,
+  "version": 4,
   "v2": {
     "chainId": 9800,
     "settlement": "0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf",
@@ -111,5 +111,46 @@
     ]
   },
   "msgDomain": "qorechain-msg-v1|qorechain-diana|",
-  "stockTx": "751AA20B0BAABDDFC4ED958A3C9B200F1F009B80F19EB97C02CAF641B3660AD0"
+  "v3": {
+    "chainId": 9800,
+    "settlement": "0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e",
+    "deployTx": "0x9d80450bd3e236510032b4a744321bf07da44114bc5fab084c105b2047f403ad",
+    "base": "fETH",
+    "quote": "fUSD",
+    "agent": "0x98b7426ea53F18Ad4FcC11B52a3B8d008C02308e",
+    "settler": "0xe203D8214722f17101ab85648ec900bb91fbe891",
+    "treasury": "0x95763489fF56D3ac6dBc34d1BF3c72ccb7487E4A",
+    "settleWindowBlocks": 600,
+    "version": 3,
+    "msgDomain": "qorechain-msg-v1|qorechain-diana|",
+    "stockTx": "751AA20B0BAABDDFC4ED958A3C9B200F1F009B80F19EB97C02CAF641B3660AD0",
+    "withdrawnToTreasury": [
+      {
+        "token": "0x02292293c13880a26242690eb70a0e42B8E91c28",
+        "amount": "47398366231028450",
+        "hash": "0x732ca393840bc7ba44a7b0e8b5193763c6c2d90972a8e9dc8bfc3eb1ce5420fd",
+        "status": "success"
+      },
+      {
+        "token": "0x97143B771D34ddb9130b807b135Ae675A5a963CA",
+        "amount": "111886553",
+        "hash": "0x35f393797f367f829adf6f1581c25c6bc80300285dfcfbe2ea9b67baa2b34694",
+        "status": "success"
+      }
+    ]
+  },
+  "maker": "0x0Df2c024bFF76dB245e7c52f17460689cEB95bF5",
+  "makerCosmos": "qor1phevqf9l7akmy308c5h3w3sx388tjkl4gvk7pe",
+  "owner": "0x9fE3Cd701e1dE6d8B5b71DF8F63eE83D96639a61",
+  "revealBlocks": 20,
+  "mandate": {
+    "maxNet": "50000000000000000",
+    "maxSpreadBps": 300,
+    "bandBps": 1500,
+    "bandWindow": "2000",
+    "dailyBaseOut": "20000000000000000",
+    "dailyQuoteOut": "100000000",
+    "expiry": "12374395"
+  },
+  "stockTx": "6288C81358886A324DD3C384519A2009FB32B232C5B9DAD11331C7CB6119FFA2"
 }

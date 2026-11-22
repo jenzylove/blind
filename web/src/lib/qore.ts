@@ -1,6 +1,6 @@
 // Which QoreChain technology does each piece of Blind's work. Every line here is true of the live build.
 export const REPO = "https://github.com/jenzylove/blind";
-export const CONTRACT = "0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e";
+export const CONTRACT = "0x036701960d6e42e6d167222a917405ba3315a79b";
 export const CONTRACT_URL = `https://explore.qore.network/address/${CONTRACT}`;
 export const RELAY_SRC = `${REPO}/blob/main/server/relay.ts`;
 export const LIMIT_SRC = `${REPO}/blob/main/server/loop.ts`;

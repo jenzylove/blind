@@ -6,7 +6,7 @@ import {
 import { seal } from "@qorechain/qoreseal";
 import {
   createPublicClient, createWalletClient, http, defineChain, encodeAbiParameters, encodeFunctionData,
-  hexToBytes, toHex, maxUint256, type Hex,
+  hexToBytes, toHex, maxUint256, keccak256, type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import abi from "../abi.json";
@@ -217,7 +217,8 @@ export function burnerTrader(acc: UnifiedAccount): Trader {
 }
 
 // ------------------------------------------------------------------ orders
-export interface Built { envelope: Hex; bytes: number; order: { buy: boolean; amountIn: bigint; minOut: bigint; batch: bigint; expiry: bigint } }
+/** A placed order. A swap goes on chain as a 32 byte fingerprint only; a limit order as a sealed envelope. */
+export interface Built { envelope?: Hex; fingerprint?: Hex; bytes: number; order: Order; sig?: Hex; salt?: Hex }
 
 export function minOutFor(buy: boolean, amountIn: bigint, mid: bigint, bps: bigint) {
   return buy ? (amountIn * SCALE * 10_000n) / (mid * (10_000n + bps)) : (amountIn * mid * (10_000n - bps)) / (SCALE * 10_000n);
@@ -232,12 +233,57 @@ export async function sealOrder(t: Trader, s: State, p: { buy: boolean; amountIn
     amountIn: p.amountIn, minOut: minOutFor(p.buy, p.amountIn, mid, p.bps), nonce: BigInt(Date.now()),
   };
   const sig = await t.signOrder(s, order);
+  if (!p.standing) {
+    // A swap: only its fingerprint leaves this browser before the price is locked.
+    const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    return { fingerprint: fingerprintOf(order, toHex(sig), salt), bytes: 32, order, sig: toHex(sig), salt };
+  }
+  // A limit order waits across batches while you are offline, so it is sealed to the operator's standing key.
   const plaintext = hexToBytes(encodeAbiParameters(ORDER_T, [order, toHex(sig)]));
-  const key = p.standing ? s.standingKey : s.batch.publicKey;
-  if (!key) throw new Error("The batch key is not published yet. Try again in a moment.");
-  const purpose = p.standing ? `blind-standing-v1:${s.contract.toLowerCase()}` : `blind-order-v1:${s.contract.toLowerCase()}:${s.batch.id}`;
+  const key = s.standingKey;
+  const purpose = `blind-standing-v1:${s.contract.toLowerCase()}`;
   const env = seal({ chainId: CHAIN_ID, purpose, recipients: [{ mlkemPublicKey: hexToBytes(key.mlkem as Hex), x25519PublicKey: hexToBytes(key.x25519 as Hex) }], plaintext });
   return { envelope: toHex(env), bytes: env.length, order };
+}
+
+/** keccak256(abi.encode(order, keccak256(signature), salt)): the same as BlindSettlement.fingerprintOf. */
+export function fingerprintOf(order: Order, sig: Hex, salt: Hex): Hex {
+  return keccak256(encodeAbiParameters([ORDER_T[0], { type: "bytes32" }, { type: "bytes32" }] as any, [order, keccak256(sig), salt]));
+}
+
+// ------------------------------------------------------------------ reveal, only after the price is locked on chain
+interface Pending { batch: number; index: number; contract: string; order: Record<string, string | boolean>; signature: Hex; salt: Hex; at: number }
+const PENDING = "blind.pending";
+const loadPending = (): Pending[] => { try { return JSON.parse(localStorage.getItem(PENDING) ?? "[]"); } catch { return []; } };
+const savePending = (x: Pending[]) => { try { localStorage.setItem(PENDING, JSON.stringify(x)); } catch { /* fine */ } };
+const revealing = new Set<string>();
+
+/** Watch the contract directly (not the server): once the batch's commit block is on chain and passed,
+ *  hand the order over for its reveal. Retries until revealed or the window is over. */
+export async function revealWhenLocked(p: Pending): Promise<"revealed" | "missed"> {
+  const key = `${p.contract}:${p.batch}:${p.index}`;
+  if (revealing.has(key)) return "revealed";
+  revealing.add(key);
+  try {
+    for (let i = 0; i < 400; i++) {
+      const b = (await pub.readContract({ address: p.contract as Hex, abi: abi as any, functionName: "batches", args: [BigInt(p.batch)] }).catch(() => null)) as any[] | null;
+      const head = Number(await pub.getBlockNumber().catch(() => 0n));
+      const commitBlock = b ? Number(b[1]) : 0;
+      const done = (await pub.readContract({ address: p.contract as Hex, abi: abi as any, functionName: "revealedAs", args: [BigInt(p.batch), BigInt(p.index)] }).catch(() => null)) as Hex | null;
+      if (done && !/^0x0+$/.test(done)) { savePending(loadPending().filter((x) => !(x.batch === p.batch && x.index === p.index && x.contract === p.contract))); return "revealed"; }
+      if (b && Number(b[2]) > 0) break; // settled without it
+      if (commitBlock && head > commitBlock + 20) break; // window over
+      if (commitBlock && head > commitBlock) await api.reveal({ batch: p.batch, index: p.index, order: p.order, signature: p.signature, salt: p.salt }).catch(() => null);
+      await sleep(1500);
+    }
+    savePending(loadPending().filter((x) => !(x.batch === p.batch && x.index === p.index && x.contract === p.contract)));
+    return "missed";
+  } finally { revealing.delete(key); }
+}
+
+/** After a reload: finish any reveal this browser still owes. */
+export function resumeReveals() {
+  for (const p of loadPending()) if (Date.now() - p.at < 30 * 60_000) revealWhenLocked(p);
 }
 
 /** Seal to the open batch and post. If intake just closed, reseal for the next batch and retry. */
@@ -247,8 +293,15 @@ export async function placeSwap(acc: Trader, p: { buy: boolean; amountIn: bigint
     if (!s.batch.taking) { await sleep(2500); continue; }
     const built = await sealOrder(acc, s, p);
     onSealed?.(built);
-    const r = await api.order(built.envelope);
-    if (r.ok) return { ...r.body, built };
+    const r = await api.order(built.fingerprint!);
+    if (r.ok) {
+      const o = built.order;
+      const pending: Pending = { batch: r.body.batch, index: r.body.index, contract: s.contract, signature: built.sig!, salt: built.salt!, at: Date.now(),
+        order: { user: o.user, batch: o.batch.toString(), expiry: o.expiry.toString(), buy: o.buy, amountIn: o.amountIn.toString(), minOut: o.minOut.toString(), nonce: o.nonce.toString() } };
+      savePending([...loadPending(), pending]);
+      revealWhenLocked(pending);
+      return { ...r.body, built };
+    }
     if (r.status !== 409) throw new Error(r.body?.error ?? "The order was not accepted.");
     await sleep(2500);
   }
@@ -261,7 +314,7 @@ export async function placeLimit(acc: Trader, p: { buy: boolean; amountIn: bigin
     if (!s.batch.taking) { await sleep(2500); continue; }
     const built = await sealOrder(acc, s, { ...p, standing: { blocks: p.blocks } });
     onSealed?.(built);
-    const r = await api.limit(built.envelope);
+    const r = await api.limit(built.envelope!);
     if (r.ok) return { ...r.body, built };
     if (r.status !== 409) throw new Error(r.body?.error ?? "The order was not accepted.");
     await sleep(2500);
