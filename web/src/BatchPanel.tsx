@@ -1,5 +1,6 @@
 import type { BatchRec } from "./lib/api";
-import { price, blockNo, inLabel, outLabel } from "./lib/fmt";
+import { price, inLabel, outLabel } from "./lib/fmt";
+import { agoWords } from "./ui";
 import { Edge } from "./ui";
 
 /** What a settled batch looks like in daylight: each fill against x/amm, and the one price. */
@@ -8,7 +9,7 @@ export default function BatchPanel({ rec, max = 3, priced = true }: { rec: Batch
   const fills = rec.fills ?? [];
   return (
     <div className="bp">
-      <div className="bp-h"><span>Batch {rec.batch}{rec.open ? ` · opened at block ${blockNo(rec.open.block)}` : ""}</span><span>vs x/amm</span></div>
+      <div className="bp-h"><span>{rec.endedAt ? `Last batch, ${agoWords(rec.endedAt)}` : `Batch ${rec.batch}`}</span><span>vs the public pool</span></div>
       {fills.slice(0, max).map((f, i) => (
         <div className="bp-r" key={i}>
           <span className="side">{f.buy ? "Buy" : "Sell"}</span>
