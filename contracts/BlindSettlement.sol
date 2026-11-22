@@ -6,33 +6,39 @@ interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
 }
 
-/// @title Blind: sealed batch trading with a market maker that must commit first.
+/// @title Blind: batch trading where nobody can read an order before the price is locked.
 /// @notice One market (base / quote), traded in batches:
-///   1. The settler creates a batch and fixes the hash of the batch secret key.
-///   2. Users' orders arrive sealed (ML-KEM-1024 envelopes) and are posted on chain.
-///   3. The market maker commits a bid, an ask, a maximum net size and an expiry,
-///      signed with its ML-DSA-87 key. Intake closes at that moment.
-///   4. In a later block the batch key is revealed and anyone can open the envelopes.
-///   5. The settler submits the opened orders. The contract checks every user's
-///      ML-DSA-87 signature, works out ONE clearing price from the committed quote,
-///      enforces every user's signed min-out and moves every leg atomically.
-/// @dev Nothing trusts msg.sender for prices or amounts. A stolen settler key can only
-///      settle orders users really signed, at the price this contract computes.
+///   1. The settler opens a batch.
+///   2. Each user posts only a fingerprint of their order: keccak256(order, signature hash, salt).
+///      The order itself never leaves the user's browser, so nobody (operator, market maker, a future
+///      quantum computer) can read it: there is no key to steal or break.
+///   3. The market maker commits its price curve, signed with its ML-DSA-87 key, from its own account.
+///      The curve must sit inside a mandate the owner signed with an ML-DSA-87 key. Intake closes.
+///   4. Strictly after the commit block, each user reveals their own order; the contract checks it
+///      against the fingerprint posted earlier.
+///   5. The settler submits revealed orders. The contract checks every user's ML-DSA-87 signature
+///      (QoreChain's pqcVerify precompile), computes ONE clearing price from the committed curve,
+///      enforces every signed minimum and moves every leg atomically.
+/// @dev Nothing trusts msg.sender for prices or amounts. A stolen settler key can only settle orders
+///      users really signed and revealed, at the price this contract computes.
 contract BlindSettlement {
     address constant VERIFY = 0x0000000000000000000000000000000000000a01; // pqcVerify
     address constant STATUS = 0x0000000000000000000000000000000000000a02; // pqcKeyStatus
     uint256 public constant PRICE_SCALE = 1e18; // price = quote base units per base unit, x 1e18
     uint256 public constant MAX_ORDERS = 32;
+    uint256 public constant MAX_POSTS = 64;
 
     IERC20 public immutable base;
     IERC20 public immutable quote;
-    address public immutable agent;    // ML-DSA-87 key that signs quotes and inventory moves
-    address public immutable settler;  // the only account that may create and settle batches
+    address public immutable agent;    // ML-DSA-87 key that signs the market maker's curves
+    address public immutable maker;    // the only account that may commit a curve (the agent's leashed account)
+    address public immutable owner;    // ML-DSA-87 key that signs the mandate and inventory withdrawals
+    address public immutable settler;  // opens batches and settles them
     address public immutable treasury; // inventory can leave only to this address
-    uint64 public immutable settleWindow; // blocks after open in which a batch may settle
+    uint64 public immutable revealWindow; // blocks after the commit in which users reveal
+    uint64 public immutable settleWindow; // blocks after the reveal window in which the batch may settle
     /// QoreChain's message-signing domain, "qorechain-msg-v1|<chain id>|". Users sign their order under it,
-    /// the same form QoreX's signArbitrary and QoreSign's messagePqSignBytes produce, so a wallet and a
-    /// browser key sign identical bytes and an order signature can never pass as a transaction signature.
+    /// the same form QoreX's signArbitrary and QoreSign's messagePqSignBytes produce.
     bytes public msgDomain;
 
     struct Order {
@@ -46,12 +52,12 @@ contract BlindSettlement {
     }
 
     struct Batch {
-        bytes32 keyHash;
-        uint64 commitBlock;
-        uint64 openBlock;
+        uint64 openBlock;   // set when the settler opens the batch
+        uint64 commitBlock; // the market maker's curve; intake closes
         uint64 settleBlock;
         uint64 quoteExpiry;
-        uint32 sealedCount;
+        uint32 posted;
+        uint32 revealed;
         uint128 bid;    // the maker's bid for a tiny net
         uint128 ask;    // the maker's ask for a tiny net
         uint128 bidMax; // its bid when it buys the full maxNet
@@ -70,30 +76,53 @@ contract BlindSettlement {
         uint128 maxNet;
     }
 
+    /// What the owner allows the market maker to do. Signed with the owner's ML-DSA-87 key.
+    struct Mandate {
+        uint128 maxNet;        // largest net size per batch, in base units
+        uint32 maxSpreadBps;   // ask over bid at a tiny net
+        uint32 bandBps;        // the whole curve within this band of the last clearing price
+        uint64 bandWindow;     // ... when that price is at most this many blocks old
+        uint128 dailyBaseOut;  // withdrawals per UTC day, base
+        uint128 dailyQuoteOut; // withdrawals per UTC day, quote
+        uint64 expiry;         // last block the mandate holds
+    }
+
     uint64 public batchCount;
+    uint256 public mandateNonce;
     uint256 public withdrawNonce;
+    uint256 public lastPrice;
+    uint64 public lastPriceBlock;
+    Mandate public mandate;
     mapping(uint64 => Batch) public batches;
+    mapping(uint64 => mapping(uint256 => bytes32)) public fingerprint; // batch => index => posted fingerprint
+    mapping(uint64 => mapping(uint256 => bytes32)) public revealedAs;  // batch => index => hash(order, sig hash)
     mapping(bytes32 => bool) public used; // order hash => filled
+    mapping(address => mapping(uint256 => uint256)) public withdrawnOn; // token => UTC day => amount
     uint256 private locked = 1;
 
-    event Created(uint64 indexed batch, bytes32 keyHash);
-    event Sealed(uint64 indexed batch, uint32 index, bytes envelope);
+    event Opened(uint64 indexed batch);
+    event Posted(uint64 indexed batch, uint256 index, bytes32 fingerprint);
     event Committed(uint64 indexed batch, Curve curve, uint64 quoteExpiry);
-    event Opened(uint64 indexed batch, bytes secretKey);
+    event Revealed(uint64 indexed batch, uint256 index, Order order, bytes signature);
     event Filled(uint64 indexed batch, bytes32 indexed orderHash, address indexed user, bool buy, uint256 amountIn, uint256 amountOut);
     event Settled(uint64 indexed batch, uint256 price, uint256 quoteIn, uint256 baseIn, int256 makerBase, int256 makerQuote, uint256 orders);
+    event MandateSet(uint256 nonce, Mandate mandate);
     event Withdrawn(address indexed token, uint256 amount, uint256 nonce);
 
     error NotSettler();
+    error NotMaker();
     error BadPhase();
     error BadSignature();
     error KeyNotProven();
     error BadQuote();
+    error OutsideMandate();
+    error BadReveal();
     error BadOrder(uint256 index);
     error MinOut(uint256 index);
     error TooBig();
     error TransferFailed();
     error BadToken();
+    error OverDailyLimit();
 
     modifier nonReentrant() {
         require(locked == 1);
@@ -102,14 +131,20 @@ contract BlindSettlement {
         locked = 1;
     }
 
-    constructor(IERC20 base_, IERC20 quote_, address agent_, address settler_, address treasury_, uint64 settleWindow_, string memory chainName_) {
+    constructor(
+        IERC20 base_, IERC20 quote_, address agent_, address maker_, address owner_, address settler_, address treasury_,
+        uint64 revealWindow_, uint64 settleWindow_, string memory chainName_
+    ) {
         if (address(base_).code.length == 0 || address(quote_).code.length == 0 || address(base_) == address(quote_)) revert BadToken();
         msgDomain = bytes.concat("qorechain-msg-v1|", bytes(chainName_), "|");
         base = base_;
         quote = quote_;
         agent = agent_;
+        maker = maker_;
+        owner = owner_;
         settler = settler_;
         treasury = treasury_;
+        revealWindow = revealWindow_;
         settleWindow = settleWindow_;
     }
 
@@ -135,12 +170,15 @@ contract BlindSettlement {
     // ---------------------------------------------------------------- messages (what keys sign)
 
     function quoteMessage(uint64 batch, Curve memory c, uint64 quoteExpiry) public view returns (bytes memory) {
-        return abi.encode("blind-quote-v2", block.chainid, address(this), batch, c, quoteExpiry);
+        return abi.encode("blind-quote-v4", block.chainid, address(this), batch, c, quoteExpiry);
     }
 
-    function curveOf(uint64 id) public view returns (Curve memory) {
-        Batch storage b = batches[id];
-        return Curve(b.bid, b.ask, b.bidMax, b.askMax, b.maxNet);
+    function mandateMessage(Mandate memory m, uint256 nonce) public view returns (bytes memory) {
+        return abi.encode("blind-mandate-v4", block.chainid, address(this), m, nonce);
+    }
+
+    function withdrawMessage(address token, uint256 amount, uint256 nonce) public view returns (bytes memory) {
+        return abi.encode("blind-withdraw-v4", block.chainid, address(this), token, treasury, amount, nonce);
     }
 
     function orderHash(Order calldata o) public pure returns (bytes32) {
@@ -156,36 +194,68 @@ contract BlindSettlement {
         return bytes.concat(msgDomain, orderMessage(o));
     }
 
-    function withdrawMessage(address token, uint256 amount, uint256 nonce) public view returns (bytes memory) {
-        return abi.encode("blind-withdraw-v1", block.chainid, address(this), token, treasury, amount, nonce);
+    /// What a user posts before the price is locked. The salt keeps it unguessable.
+    function fingerprintOf(Order calldata o, bytes calldata sig, bytes32 salt) public pure returns (bytes32) {
+        return keccak256(abi.encode(o, keccak256(sig), salt));
+    }
+
+    function curveOf(uint64 id) public view returns (Curve memory) {
+        Batch storage b = batches[id];
+        return Curve(b.bid, b.ask, b.bidMax, b.askMax, b.maxNet);
+    }
+
+    // ---------------------------------------------------------------- the owner's mandate
+
+    function setMandate(Mandate calldata m, bytes calldata sig) external {
+        uint256 n = mandateNonce;
+        _verify(owner, sig, mandateMessage(m, n));
+        mandateNonce = n + 1;
+        mandate = m;
+        emit MandateSet(n, m);
+    }
+
+    /// Whether a curve fits the mandate right now. The commit reverts with OutsideMandate if not.
+    function withinMandate(Curve calldata c) public view returns (bool) {
+        Mandate memory m = mandate;
+        if (block.number > m.expiry || c.maxNet > m.maxNet) return false;
+        if (uint256(c.ask - c.bid) * 10_000 > uint256(m.maxSpreadBps) * c.bid) return false;
+        if (lastPrice != 0 && block.number <= lastPriceBlock + m.bandWindow) {
+            if (uint256(c.bidMax) * 10_000 < lastPrice * (10_000 - m.bandBps)) return false;
+            if (uint256(c.askMax) * 10_000 > lastPrice * (10_000 + m.bandBps)) return false;
+        }
+        return true;
     }
 
     // ---------------------------------------------------------------- batch lifecycle
 
-    function create(bytes32 keyHash) external returns (uint64 id) {
+    function open() external returns (uint64 id) {
         if (msg.sender != settler) revert NotSettler();
-        require(keyHash != 0);
         id = ++batchCount;
-        batches[id].keyHash = keyHash;
-        emit Created(id, keyHash);
+        batches[id].openBlock = uint64(block.number);
+        emit Opened(id);
     }
 
-    /// Anyone may post a sealed order while the batch is taking orders.
-    function post(uint64 id, bytes calldata envelope) external {
+    /// Anyone may post an order's fingerprint while the batch is taking orders.
+    function post(uint64 id, bytes32 fp) external {
         Batch storage b = batches[id];
-        if (b.keyHash == 0 || b.commitBlock != 0) revert BadPhase();
-        require(envelope.length > 0 && envelope.length <= 8192);
-        emit Sealed(id, b.sealedCount++, envelope);
+        if (b.openBlock == 0 || b.commitBlock != 0) revert BadPhase();
+        if (fp == 0 || b.posted >= MAX_POSTS) revert TooBig();
+        uint256 i = b.posted++;
+        fingerprint[id][i] = fp;
+        emit Posted(id, i, fp);
     }
 
-    /// The market maker's curve, fixed before any order can be read. Anyone may submit it;
-    /// only the agent's ML-DSA-87 signature makes it valid. Closes intake.
+    /// The market maker's curve, fixed while every order is still only a fingerprint. Only the maker
+    /// account may commit (its key is limited on chain to this call), the agent's ML-DSA-87 signature
+    /// must verify, and the curve must sit inside the owner's mandate. Closes intake.
     function commit(uint64 id, Curve calldata c, uint64 quoteExpiry, bytes calldata sig) external {
+        if (msg.sender != maker) revert NotMaker();
         Batch storage b = batches[id];
-        if (b.keyHash == 0 || b.commitBlock != 0) revert BadPhase();
+        if (b.openBlock == 0 || b.commitBlock != 0) revert BadPhase();
         if (c.bidMax == 0 || c.bidMax > c.bid || c.bid >= c.ask || c.ask > c.askMax || c.maxNet == 0 || quoteExpiry <= block.number) {
             revert BadQuote();
         }
+        if (!withinMandate(c)) revert OutsideMandate();
         _verify(agent, sig, quoteMessage(id, c, quoteExpiry));
         b.bid = c.bid;
         b.ask = c.ask;
@@ -197,13 +267,17 @@ contract BlindSettlement {
         emit Committed(id, c, quoteExpiry);
     }
 
-    /// Reveal the batch key, strictly after the commit block. Anyone holding the key may call.
-    function open(uint64 id, bytes calldata secretKey) external {
+    /// Strictly after the commit block, anyone holding an order's salt (its owner) reveals it.
+    function reveal(uint64 id, uint256 index, Order calldata o, bytes calldata sig, bytes32 salt) external {
         Batch storage b = batches[id];
-        if (b.commitBlock == 0 || block.number <= b.commitBlock || b.openBlock != 0) revert BadPhase();
-        require(keccak256(secretKey) == b.keyHash, "wrong batch key");
-        b.openBlock = uint64(block.number);
-        emit Opened(id, secretKey);
+        if (b.commitBlock == 0 || block.number <= b.commitBlock || block.number > b.commitBlock + revealWindow || b.settleBlock != 0) {
+            revert BadPhase();
+        }
+        bytes32 fp = fingerprint[id][index];
+        if (fp == 0 || revealedAs[id][index] != 0 || fingerprintOf(o, sig, salt) != fp) revert BadReveal();
+        revealedAs[id][index] = keccak256(abi.encode(o, keccak256(sig)));
+        b.revealed++;
+        emit Revealed(id, index, o, sig);
     }
 
     /// The clearing price for given totals under a committed curve.
@@ -246,18 +320,22 @@ contract BlindSettlement {
         }
     }
 
-    function settle(uint64 id, Order[] calldata orders, bytes[] calldata sigs) external nonReentrant {
+    /// Settles revealed orders. Allowed once every posted order is revealed or the reveal window is over,
+    /// so the settler cannot cut the window short to leave orders out.
+    function settle(uint64 id, uint256[] calldata indexes, Order[] calldata orders, bytes[] calldata sigs) external nonReentrant {
         if (msg.sender != settler) revert NotSettler();
         Batch storage b = batches[id];
-        if (b.openBlock == 0 || b.settleBlock != 0) revert BadPhase();
-        if (block.number > b.quoteExpiry || block.number > b.openBlock + settleWindow) revert BadPhase();
-        if (orders.length != sigs.length || orders.length > MAX_ORDERS) revert TooBig();
+        if (b.commitBlock == 0 || b.settleBlock != 0 || block.number <= b.commitBlock) revert BadPhase();
+        if (b.revealed < b.posted && block.number <= b.commitBlock + revealWindow) revert BadPhase();
+        if (block.number > b.quoteExpiry || block.number > b.commitBlock + revealWindow + settleWindow) revert BadPhase();
+        if (orders.length != sigs.length || orders.length != indexes.length || orders.length > MAX_ORDERS) revert TooBig();
         b.settleBlock = uint64(block.number);
 
         Totals memory t;
-        (t.quoteIn, t.baseIn) = _authenticate(id, orders, sigs);
+        (t.quoteIn, t.baseIn) = _authenticate(id, indexes, orders, sigs);
         t.price = clearingPrice(curveOf(id), t.quoteIn, t.baseIn);
         b.price = uint128(t.price);
+        if (t.price != 0) { lastPrice = t.price; lastPriceBlock = uint64(block.number); }
         (t.baseOut, t.quoteOut) = _execute(id, orders, t.price);
         _finish(id, b.maxNet, t, orders.length);
     }
@@ -270,12 +348,13 @@ contract BlindSettlement {
         uint256 quoteOut;
     }
 
-    /// Pass 1: authenticate every order, mark it used, total each side.
-    function _authenticate(uint64 id, Order[] calldata orders, bytes[] calldata sigs)
+    /// Pass 1: every order must be the one its owner revealed; authenticate it, mark it used, total each side.
+    function _authenticate(uint64 id, uint256[] calldata indexes, Order[] calldata orders, bytes[] calldata sigs)
         internal returns (uint256 quoteIn, uint256 baseIn)
     {
         for (uint256 i; i < orders.length; ++i) {
             Order calldata o = orders[i];
+            if (revealedAs[id][indexes[i]] != keccak256(abi.encode(o, keccak256(sigs[i])))) revert BadOrder(i);
             bytes32 h = orderHash(o);
             if (used[h] || o.amountIn == 0 || block.number > o.expiry || (o.batch != 0 && o.batch != id)) revert BadOrder(i);
             used[h] = true;
@@ -312,12 +391,18 @@ contract BlindSettlement {
         emit Settled(id, t.price, t.quoteIn, t.baseIn, makerBase, makerQuote, n);
     }
 
-    /// Inventory leaves only to the treasury, and only with the agent's ML-DSA-87 signature.
+    /// Inventory leaves only to the treasury, only with the owner's ML-DSA-87 signature, and only up to
+    /// the mandate's daily limit for that token.
     function withdraw(address token, uint256 amount, bytes calldata sig) external nonReentrant {
         if (token != address(base) && token != address(quote)) revert BadToken();
+        uint256 day = block.timestamp / 1 days;
+        uint256 cap = token == address(base) ? mandate.dailyBaseOut : mandate.dailyQuoteOut;
+        uint256 done = withdrawnOn[token][day] + amount;
+        if (done > cap) revert OverDailyLimit();
         uint256 n = withdrawNonce;
-        _verify(agent, sig, withdrawMessage(token, amount, n));
+        _verify(owner, sig, withdrawMessage(token, amount, n));
         withdrawNonce = n + 1;
+        withdrawnOn[token][day] = done;
         _pay(IERC20(token), treasury, amount);
         emit Withdrawn(token, amount, n);
     }
