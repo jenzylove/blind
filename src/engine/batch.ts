@@ -55,7 +55,9 @@ export class Engine {
   async tx(functionName: string, args: any[], margin = 1.25) {
     const data = encodeFunctionData({ abi, functionName, args });
     const est = await pub.estimateGas({ account: this.settler.evm as Hex, to: this.settlement, data });
-    if (this.link) return this.agentTx(functionName, data, Math.ceil(Number(est) * margin));
+    // The agent's own decision, its price curve, goes through its linked key. Everything else stays on the
+    // settler's window: calls through the agent lane emit no EVM logs, and orders and fills must stay public events.
+    if (this.link && functionName === "commit") return this.agentTx(functionName, data, Math.ceil(Number(est) * margin));
     const hash = await evmWallet(this.settler).sendTransaction({ to: this.settlement, data, gas: BigInt(Math.ceil(Number(est) * margin)), ...FEES });
     const rc = await pub.waitForTransactionReceipt({ hash });
     if (rc.status !== "success") throw new Error(`${functionName} reverted: ${hash}`);

@@ -13,8 +13,9 @@ const ENV = process.env.BLIND_ENV ?? ".env";
 const J = (x: any) => JSON.stringify(x, (_k, v) => (typeof v === "bigint" ? v.toString() : v instanceof Uint8Array ? toHex(v) : v), 1);
 const op = await account("OPERATOR");
 const { settlement } = state.read() as { settlement: Hex };
-// The batch lifecycle only. Not withdraw (that needs the agent's ML-DSA signature and pays only the treasury anyway).
-const AGENT_FUNCTIONS = ["create", "post", "commit", "open", "settle"];
+// The agent's one decision: committing its price curve. Calls through this lane emit no EVM logs, so the
+// steps whose events make a batch checkable (post, open, settle) stay on the settler's scoped window.
+const AGENT_FUNCTIONS = ["commit"];
 const AGENT_CALLS = (artifact("BlindSettlement").abi as any[]).filter((f) => f.type === "function" && AGENT_FUNCTIONS.includes(f.name)).map((f) => toFunctionSelector(f));
 
 async function status() {
@@ -38,7 +39,10 @@ async function link() {
     permissions: ["evm"], expiryUnix: Math.floor(Date.now() / 1000) + 29 * 86400, label: "Blind market maker agent",
     spendingRule: { id: "blind-agent", perTxLimit: "1", dailyLimit: "1", allowedDenoms: ["uqor"], enabled: true, allowedEvmCalls },
   });
-  const h = await broadcast(op, "hybrid", msgs, "600000");
+  // Already linked: only replace the rule (MsgUpdateSpendingRules), keep the key.
+  const keys = await fetchAuthenticators({ rest: NET.rest, address: op.cosmos }) as any[];
+  const linked = keys.some((x) => String(x.pubkeyHex).toLowerCase() === toHex(k.pk).slice(2) && !x.revoked);
+  const h = await broadcast(op, "hybrid", linked ? [msgs[0]] : msgs, "600000");
   const r = await waitTx(h);
   console.log(`link: ${h} code ${r.code} height ${r.height}${r.code ? " " + r.log : ""}`);
   if (r.code) process.exit(1);

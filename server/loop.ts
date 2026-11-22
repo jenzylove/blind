@@ -83,7 +83,6 @@ export class BatchLoop {
 
   /** Keep a scoped window open on the settler: target = the settlement contract only. */
   async ensureWindow() {
-    if (this.engine.link) return; // the agent's linked key calls the contract under its spending rule; no window needed
     const w = await evmWindowStatus({ rest: NET.rest, address: this.engine.settler.cosmos });
     const remainingTxs = Number((w as any).remainingTxs ?? (w as any).remaining_txs ?? 0);
     const remainingBlocks = Number((w as any).remainingBlocks ?? (w as any).remaining_blocks ?? 0);

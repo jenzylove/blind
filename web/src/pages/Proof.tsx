@@ -36,7 +36,7 @@ export default function Proof() {
 
       <section className="vfix">
         <h2>The agent's leash, read from the chain</h2>
-        <p>The market maker agent does not hold the operator's key. It signs with its own key, linked to the operator account with a spending rule that QoreChain enforces on every call. Anything outside the rule is refused by the chain, not by our code.</p>
+        <p>The market maker agent does not hold the operator's key. It commits its price with its own key, linked to the operator account with a spending rule that QoreChain enforces on every call. Anything outside the rule is refused by the chain, not by our code. Posting, revealing and settling stay with the operator, so every order and fill remains a public event anyone can check.</p>
         {ag ? (
           <div className="vrows">
             <div className="vrow kv"><span>Agent key linked</span><b>{ag.linked ? "yes" : "no"}</b></div>

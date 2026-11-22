@@ -203,7 +203,7 @@ function Limits() {
             <li><b>The contract sets the price,</b> not the operator, from the locked curve and the orders.</li>
             <li><b>Every order is yours.</b> Each carries your post quantum signature, checked against the key QoreChain holds for your account.</li>
             <li><b>Your limit holds.</b> Nobody is filled below the minimum they signed.</li>
-            <li><b>The agent is on a leash.</b> Its key is linked to the operator account with a spending rule the chain enforces: it may call only Blind's five batch functions and move at most 1 uqor a day.</li>
+            <li><b>The agent is on a leash.</b> Its key is linked to the operator account with a spending rule the chain enforces: the only call it can make is committing a price curve to Blind, and it can move at most 1 uqor a day.</li>
           </ul>
         </div>
         <div className="shade">
