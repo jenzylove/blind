@@ -102,7 +102,7 @@ export function SlatGlyph({ state }: { state: BlindState }) {
 /** The newest settled batch with fills, from app batches and test runs together. */
 export function latestSettled(b: { live: BatchRec[]; testRuns: BatchRec[] } | null): BatchRec | null {
   if (!b) return null;
-  const all = [...b.live, ...b.testRuns].filter((r) => r.settled && r.fills?.length && r.settle && r.commit && r.open && r.create);
+  const all = [...b.live, ...b.testRuns].filter((r) => r.settled && r.fills?.length && r.settle && r.commit && (r.open || r.reveals?.length) && r.create);
   all.sort((a, c) => c.batch - a.batch);
   return all[0] ?? null;
 }

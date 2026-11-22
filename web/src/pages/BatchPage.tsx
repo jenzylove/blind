@@ -16,7 +16,15 @@ export default function BatchPage({ id }: { id: number }) {
     </div>
   );
   const posts = r.posts ?? [];
-  const steps: [string, string, number | undefined, string | undefined, ReactNode?][] = [
+  const v4 = (r.version ?? 2) >= 4;
+  const reveals: any[] = (r as any).reveals ?? [];
+  const steps: [string, string, number | undefined, string | undefined, ReactNode?][] = v4 ? [
+    ["Batch opened", "Taking orders as fingerprints", r.create?.block, r.create?.hash, undefined],
+    ...posts.map((p: any, i: number) => [`Order ${i + 1} posted`, p.fingerprint ? `Fingerprint ${String(p.fingerprint).slice(0, 10)}…, 32 bytes. No side, no amount` : "A 32 byte fingerprint", p.block, p.hash, i === 0 ? <StepQc i={1} /> : undefined] as [string, string, number, string, ReactNode?]),
+    ["Price locked", "The market maker's signed curve, inside the owner's mandate", r.commit?.block, r.commit?.hash, <StepQc i={2} href="/proof#agent" link="the rule" />],
+    ...reveals.filter((x) => x.hash).map((x: any) => [`Order ${Number(x.index) + 1} revealed`, x.by === "owner" ? "By its owner's browser, after the price was locked" : "By the operator: a limit order", x.block, x.hash, undefined] as [string, string, number, string, ReactNode?]),
+    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fills` : "Did not settle", r.settle?.block, r.settle?.hash, r.settle ? <StepQc i={4} /> : undefined],
+  ] : [
     ["Batch opened", "Its key's fingerprint fixed on chain", r.create?.block, r.create?.hash, <Qc name="QoreChain EVM">BlindSettlement fixes the batch key's fingerprint</Qc>],
     ...posts.map((p, i) => [`Sealed order ${i + 1}`, p.bytes ? `${p.bytes.toLocaleString("en-US")} bytes, unreadable` : "Posted, unreadable", p.block, p.hash, i === 0 ? <StepQc i={0} /> : undefined] as [string, string, number, string, ReactNode?]),
     ["Price locked", "The market maker's signed curve", r.commit?.block, r.commit?.hash, viaLinkedKey(r.commit?.hash) ? <StepQc i={2} href="/proof#agent" link="the rule" /> : <Qc name={COMMIT_PLAIN.name}>{COMMIT_PLAIN.rest}</Qc>],
@@ -32,7 +40,7 @@ export default function BatchPage({ id }: { id: number }) {
 
       <div className="batchtop">
         <Blind state={r.settled ? "open" : "closed"} label={`Batch ${r.batch}`}><BatchPanel rec={r} max={6} /></Blind>
-        {r.commit && r.open && <p className="cap">The price was locked in block {blockNo(r.commit.block)} and the blinds opened in block {blockNo(r.open.block)}: {r.open.block - r.commit.block} blocks before any order could be read.</p>}
+        {r.commit && r.open && !v4 && <p className="cap">The price was locked in block {blockNo(r.commit.block)} and the blinds opened in block {blockNo(r.open.block)}: {r.open.block - r.commit.block} blocks before any order could be read.</p>}
       </div>
 
       <section className="bsec">

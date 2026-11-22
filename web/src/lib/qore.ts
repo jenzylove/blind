@@ -11,10 +11,10 @@ export const txUrl = (h: string) => `/api/explorer/tx/${h}`;
 
 /** One quiet line per batch step: the QoreChain feature doing that step. Same order as STEPS. */
 export const STEP_TECH: { name: string; rest: string }[] = [
-  { name: "QoreSeal", rest: "ML-KEM-1024 + X25519 envelope, signed with your ML-DSA-87 key" },
-  { name: "QoreChain EVM", rest: "posted to BlindSettlement from the operator's scoped EVM window" },
-  { name: "Account abstraction", rest: "curve signed with ML-DSA-87, sent by the agent's linked key under a spending rule" },
-  { name: "Scoped EVM window", rest: "the operator's reveal; BlindSettlement checks the key's fingerprint" },
+  { name: "ML-DSA-87", rest: "your order signed in this browser; only its 32 byte fingerprint leaves it" },
+  { name: "QoreChain EVM", rest: "the fingerprint posted to BlindSettlement from the operator's scoped EVM window" },
+  { name: "Account abstraction", rest: "curve signed with ML-DSA-87, committed by the agent's linked key under a spending rule, inside the owner's mandate" },
+  { name: "BlindSettlement", rest: "your browser reveals the order after the commit; the contract checks it against its fingerprint" },
   { name: "pqcVerify 0x0A01", rest: "checks every order signature against the key pqcKeyStatus 0x0A02 reports" },
 ];
 

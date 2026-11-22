@@ -172,10 +172,10 @@ function Problem({ bot, env, envMissing }: { bot: BotStats | null; env: Envelope
           )}
           <p className="quiet">
             {env
-              ? `A real sealed swap, copied from QoreChain: ${env.bytes.toLocaleString("en-US")} bytes of this. No side, no amount, no limit. It turns back into an order only after the market maker has locked its price, so there is nothing to trade ahead of.`
+              ? "A real swap on QoreChain, exactly as the chain holds it before the price is locked: a 32 byte fingerprint. No side, no amount, no limit, and no key that could open it. Your browser keeps the order and reveals it only after the market maker has locked its price."
               : envMissing
-                ? "Every sealed swap lands on chain as 6,648 bytes of sealed data. No side, no amount, nothing to trade ahead of."
-                : "Reading the newest sealed swap from the chain."}
+                ? "Before the price is locked, every swap is only a 32 byte fingerprint on chain. Your browser keeps the order and reveals it after the price is locked."
+                : "Reading the newest swap from the chain."}
           </p>
         </div>
       </div>
@@ -186,7 +186,7 @@ function Problem({ bot, env, envMissing }: { bot: BotStats | null; env: Envelope
 // ------------------------------------------------------------------ 02 how it works
 // One blind follows the step being read. Each state shows real chain data: sealed bytes, the locked price, the fills.
 const HOW = [
-  "You seal your swap in your browser.",
+  "Your browser posts only a fingerprint of your swap.",
   "The market maker locks its price before anyone can open an order.",
   "Every swap that arrived in the same 20 seconds settles together at one price.",
 ];
@@ -251,9 +251,9 @@ function How({ b, env, envMissing }: { b: Batches | null; env: Envelope | null; 
 }
 
 function howCaption(step: number, { rec, loaded, env, envMissing }: HowData) {
-  if (step === 0) return env ? `A real sealed swap: ${env.bytes.toLocaleString("en-US")} bytes.` : envMissing ? "Every sealed swap lands on chain as 6,648 sealed bytes." : "Reading the newest sealed swap from the chain.";
+  if (step === 0) return env ? "A real swap as the chain holds it: a 32 byte fingerprint." : envMissing ? "Every swap is a 32 byte fingerprint until the price is locked." : "Reading the newest swap from the chain.";
   if (!rec) return !loaded ? "Reading the latest swap from the chain." : step === 1 ? "No price locked yet. Send a swap from the app and it shows up here." : "No swap settled yet. Send one from the app and it shows up here.";
-  if (step === 1) return "Locked on chain before any order opens.";
+  if (step === 1) return "Locked on chain while every order is still a fingerprint.";
   return rec.settle ? "One transaction. Everyone at one price." : "This one is still open. It settles in one transaction.";
 }
 
@@ -341,7 +341,7 @@ const QA: [string, string][] = [
   ["What is a batch?", "Every swap that arrives in the same 20 seconds. They settle together at one price, so the order inside a batch cannot be exploited."],
   ["Is this real money?", "No. Blind runs on QoreChain testnet, as the hackathon asks, with test tokens that have no value. Every swap is still a real transaction on chain."],
   ["Do I need a wallet?", "No. One button makes a test account in this browser and fills it with test tokens. If you already use QoreX, you can trade from it instead."],
-  ["Who can read my order?", "Not bots and not other traders: your swap is sealed in your browser. The operator that runs Blind holds the key for each batch, so you trust it not to peek. The chain proves the price was locked before any order was opened."],
+  ["Who can read my order?", "Nobody, until the price is locked. Not bots, not other traders, not the market maker and not us: before then the chain holds only a fingerprint of your swap, and there is no key that opens it. Your browser reveals the order after the market maker has locked its price, and the contract checks it matches. Limit orders are the one exception: they wait while you are offline, so they are sealed to our key and we reveal them."],
   ["Why does my public swap lose to the bot?", "We run that bot ourselves on testnet. It does what bots do on any public chain: reads your swap while it waits, trades first and trades back after. It is there so you can see what Blind keeps you out of."],
 ];
 function Faq() {

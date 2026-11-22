@@ -38,7 +38,7 @@ async function readMe(acc: Who): Promise<Me> {
   };
 }
 
-interface Tracked { kind: "swap" | "limit"; batch: number; postHash: string; postBlock: number; bytes: number; buy: boolean; amountIn: string; minOut: string; expiry?: string; at: number; duel?: string; who?: string }
+interface Tracked { kind: "swap" | "limit"; batch: number; postHash: string; postBlock: number; bytes: number; buy: boolean; amountIn: string; minOut: string; expiry?: string; at: number; duel?: string; who?: string; index?: number }
 /** Orders saved before wallets existed carry no owner: they belong to the browser test account. */
 const ownedBy = (x: { who?: string }, t: Trader | null) => !!t && (x.who ? x.who === t.evm.toLowerCase() : t.kind === "burner");
 const MODE_KEY = "blind.mode.v1";
@@ -620,7 +620,7 @@ function SwapForm({ s, acc, me, onDuel, onPlaced }: { s: State | null; acc: Trad
     setErr(""); setSealed(null); setBusy(acc.kind === "qorex" ? "Approve the order signature in QoreX. It is sealed in this browser after." : "Signing and sealing in your browser.");
     try {
       const r = await placeSwap(acc, { buy, amountIn: amount, bps: BigInt(bps) }, (b) => { setSealed(b); setBusy("Sealed. Posting it on chain."); });
-      onPlaced({ kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now() });
+      onPlaced({ kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now(), index: r.index });
       setBusy("");
       refreshState();
     } catch (e: any) { setErr(e?.message ?? "The order was not placed."); setBusy(""); }
@@ -643,7 +643,7 @@ function SwapForm({ s, acc, me, onDuel, onPlaced }: { s: State | null; acc: Trad
         .catch((e) => { d = { ...d, publicErr: e?.message ?? "The public swap was not sent." }; onDuel(d); });
       const blindP = placeSwap(acc, { buy, amountIn: amount, bps: BigInt(bps) })
         .then((r) => {
-          const t: Tracked = { kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now(), duel: id };
+          const t: Tracked = { kind: "swap", batch: r.batch, postHash: r.hash, postBlock: r.block, bytes: r.built.bytes, buy, amountIn: amount.toString(), minOut: r.built.order.minOut.toString(), at: Date.now(), duel: id, index: r.index };
           onPlaced(t);
           d = { ...d, blind: t }; onDuel(d);
           refreshState();
@@ -698,11 +698,11 @@ function SwapForm({ s, acc, me, onDuel, onPlaced }: { s: State | null; acc: Trad
       </div>
 
       <button className={`btn day go ${buy ? "" : "sell"}`} onClick={go} disabled={!!block || !!busy}>{busy ? "Sending…" : block || (buy ? "Buy fETH" : "Sell fETH")}</button>
-      {!busy && !err && <p className="sealnote">{shortPublic ? "Or untick the public swap and send it sealed only." : "Sealed in this browser before it is sent. If the batch price is worse than your limit, nothing moves."}</p>}
+      {!busy && !err && <p className="sealnote">{shortPublic ? "Or untick the public swap and send it sealed only." : "Only a fingerprint leaves this browser until the price is locked. If the batch price is worse than your limit, nothing moves."}</p>}
       {busy && <div className="msg" role="status">{busy}</div>}
-      {sealed && busy && <div className="msg small">{sealed.bytes.toLocaleString("en-US")} bytes sealed. Nobody can read the side or the amount.</div>}
+      {sealed && busy && <div className="msg small">{sealed.fingerprint ? "Only a 32 byte fingerprint is sent. Nobody can read the side or the amount until the price is locked." : `${sealed.bytes.toLocaleString("en-US")} bytes sealed. Nobody can read the side or the amount.`}</div>}
       {err && <div className="msg err">{err}</div>}
-      <Qc name="QoreSeal">{STEP_TECH[0].rest}. Posted to BlindSettlement on QoreChain EVM</Qc>
+      <Qc name={STEP_TECH[0].name}>{STEP_TECH[0].rest}. Posted to BlindSettlement on QoreChain EVM</Qc>
     </div>
   );
 }
@@ -874,18 +874,19 @@ function OrderTrack({ t, acc, s, onSettled, onRec, lane }: { t: Tracked; acc: Tr
   const step = rec ? 5 : s && s.batch.id === t.batch ? phaseStep(s.phase) : s && s.batch.id > t.batch ? 5 : 1;
   const mine = rec?.fills?.findIndex((f) => f.user.toLowerCase() === me && f.amountIn === t.amountIn && !f.standing) ?? -1;
   const dropped = rec?.dropped?.find((d) => d.user.toLowerCase() === me);
+  const myReveal = t.index != null ? rec?.reveals?.find((x) => x.index === t.index) : undefined;
   const items: { st: string; text: string; h?: string; on: boolean; done: boolean; q?: ReactNode }[] = [
-    { st: "Sealed", text: `${t.bytes.toLocaleString("en-US")} bytes, ${acc.kind === "qorex" ? "signed in QoreX, sealed in this browser" : "signed in this browser"}`, on: false, done: true, q: <StepQc i={0} /> },
+    { st: "Signed", text: `${t.bytes === 32 ? "A 32 byte fingerprint" : `${t.bytes.toLocaleString("en-US")} bytes sealed`}, ${acc.kind === "qorex" ? "signed in QoreX" : "signed in this browser"}`, on: false, done: true, q: <StepQc i={0} /> },
     { st: "Posted", text: `Batch ${t.batch}, block ${blockNo(t.postBlock)}`, h: t.postHash, on: false, done: true, q: <StepQc i={1} /> },
     { st: "Price locked", text: rec?.commit ? `Market maker price locked in block ${blockNo(rec.commit.block)}` : "The market maker locks its price after intake closes", h: rec?.commit?.hash, on: step === 2 || step === 1, done: step > 2, q: rec?.commit && !viaLinkedKey(rec.commit.hash) ? <Qc name={COMMIT_PLAIN.name}>{COMMIT_PLAIN.rest}</Qc> : <StepQc i={2} href="/proof#agent" link="the rule" /> },
-    { st: "Opened", text: rec?.open ? `Batch key revealed in block ${blockNo(rec.open.block)}` : "The batch key is revealed in a later block", h: rec?.open?.hash, on: step === 3, done: step > 3, q: <StepQc i={3} /> },
+    { st: rec?.open ? "Opened" : "Revealed", text: rec?.open ? `Batch key revealed in block ${blockNo(rec.open.block)}` : myReveal ? `Your browser revealed it in block ${blockNo(myReveal.block)}` : "Your browser reveals it once the price is locked", h: rec?.open?.hash ?? myReveal?.hash, on: step === 3, done: step > 3, q: <StepQc i={3} /> },
     { st: "Settled", text: rec?.settle ? `One price for everyone, block ${blockNo(rec.settle.block)}` : rec ? "This batch did not settle" : "One transaction settles the batch", h: rec?.settle?.hash, on: step === 4, done: !!rec?.settle, q: <StepQc i={4}>{rec?.settle && mine >= 0 ? "checked your ML-DSA-87 signature against the key pqcKeyStatus 0x0A02 reports" : undefined}</StepQc> },
   ];
   return (
     <div className="track">
       {!lane && <div className="trackh"><b>{sideLine}</b><span className="dim">batch {t.batch}</span></div>}
       <Blind state={rec ? "open" : step === 3 || step === 4 ? "opening" : "closed"} flat={!lane} className={lane ? "lane" : "small"} label={lane ? `Your sealed swap, batch ${t.batch}` : undefined}>
-        {rec && mine >= 0 ? <Result f={rec.fills![mine]} rec={rec} lead={lane ? `The bot saw a sealed envelope: ${t.bytes.toLocaleString("en-US")} bytes, the same size as every other order, no side, no amount.` : undefined} />
+        {rec && mine >= 0 ? <Result f={rec.fills![mine]} rec={rec} lead={lane ? (t.bytes === 32 ? "The bot saw a 32 byte fingerprint, the same as every other order: no side, no amount." : `The bot saw a sealed envelope: ${t.bytes.toLocaleString("en-US")} bytes, the same size as every other order, no side, no amount.`) : undefined} />
           : rec ? <div className="res"><div className="big">Not filled</div><div className="vs">{dropped ? `Left out: ${dropped.reason}. Nothing moved from your account.` : rec.error ? "The batch stopped before settling. Nothing moved from your account." : "Your order was not in this settlement. Nothing moved from your account."}</div></div>
           : <div className="res"><div className="k">Sealed</div><div className="vs">Opens after the market maker's price is locked on chain.</div></div>}
       </Blind>
@@ -1038,7 +1039,7 @@ function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: Trader; s: Stat
 
       <section className="lanep">
         <div className="laneh"><b>Sealed swap on Blind</b><span>Behind the slats until the price is locked.</span></div>
-        <Qc name="QoreSeal" className="lq">{STEP_TECH[0].rest}. Settled on QoreChain EVM, checked by pqcVerify 0x0A01</Qc>
+        <Qc name={STEP_TECH[0].name} className="lq">{STEP_TECH[0].rest}. Settled on QoreChain EVM, checked by pqcVerify 0x0A01</Qc>
         {d.blindErr ? <div className="msg err">{d.blindErr}</div>
           : !d.blind ? <div className="msg">{acc.kind === "qorex" ? "Approve the order signature in QoreX, then it is sealed in this browser." : "Sealing in your browser."}</div>
           : <>

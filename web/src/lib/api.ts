@@ -18,6 +18,7 @@ export interface BatchRec {
   create?: Tx; posts?: Tx[];
   commit?: Tx & { bid: string; ask: string; bidMax?: string; askMax?: string; maxNet: string; mid: string; marginBps?: string; skewBps?: string; volBps?: string; hedgeAsk?: string; hedgeBid?: string };
   open?: Tx; opened?: number;
+  reveals?: { index: number; hash: string; block: number; by?: string }[];
   settled?: boolean; settle?: Tx & { price: string; makerBase: string; makerQuote: string };
   fills?: Fill[]; dropped?: { user: string; reason: string }[];
   hedge?: { hash?: string; height?: number; skipped?: string; failed?: string; baseDelta?: string; quoteDelta?: string };

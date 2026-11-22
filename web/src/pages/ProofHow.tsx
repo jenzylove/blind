@@ -9,12 +9,12 @@ const HOW = [
   "Your order is signed and locked in your browser to this batch's public key. Nothing readable leaves the page.",
   "The sealed order lands on chain. Anyone can see that an order exists. Nobody can see its side, size or limit.",
   "Intake closes after 20 seconds. The market maker prices from public data only and locks a signed price curve on chain.",
-  "In a later block the batch key is revealed. The contract checks it against the promise made when the batch opened, and every order is opened from chain data.",
+  "In a later block each owner's browser reveals its own order. The contract checks it against the fingerprint posted earlier, and waits for every reveal or the end of the window.",
   "One transaction. The contract sets one price on the locked curve, checks every signature, and pays everyone at that price.",
 ];
 
-const hashesOf = (rec: BatchRec) => [undefined, rec.posts?.[0]?.hash ?? rec.create?.hash, rec.commit?.hash, rec.open?.hash, rec.settle?.hash] as (string | undefined)[];
-const blocksOf = (rec: BatchRec) => [null, rec.posts?.[0]?.block ?? rec.create?.block, rec.commit?.block, rec.open?.block, rec.settle?.block] as (number | null | undefined)[];
+const hashesOf = (rec: BatchRec) => [undefined, rec.posts?.[0]?.hash ?? rec.create?.hash, rec.commit?.hash, rec.open?.hash ?? rec.reveals?.[0]?.hash, rec.settle?.hash] as (string | undefined)[];
+const blocksOf = (rec: BatchRec) => [null, rec.posts?.[0]?.block ?? rec.create?.block, rec.commit?.block, rec.open?.block ?? rec.reveals?.[0]?.block, rec.settle?.block] as (number | null | undefined)[];
 
 export default function ProofHow({ b }: { b: Batches | null }) {
   const rec = latestSettled(b);
@@ -59,9 +59,10 @@ function Built({ rec }: { rec: BatchRec | null }) {
   const tx = (h: string | undefined, fallback: string) => (h ? txUrl(h) : fallback);
   const rows: Row[] = [
     { name: "ML-DSA-87 accounts and precompiles", what: "Post quantum keys held on chain", use: "Every test account registers its ML-DSA-87 key with proof of possession (MsgRegisterPQCKeyV2) and hybrid signs everything after. At settlement BlindSettlement checks each order's signature through pqcVerify (0x0A01) against the key pqcKeyStatus (0x0A02) reports.", href: tx(rec?.settle?.hash, CONTRACT_URL), link: rec ? `Settlement of batch ${rec.batch}` : "The contract" },
-    { name: "QoreSeal", what: "Hybrid post quantum sealed envelopes", use: "Seals every order in your browser: ML-KEM-1024 + X25519, 6,648 bytes each, so a bot reading the chain learns nothing.", href: tx(rec?.posts?.[0]?.hash, CONTRACT_URL), link: rec ? `A sealed order in batch ${rec.batch}` : "The contract" },
-    { name: "Scoped EVM windows", what: "Limits on what EVM keys do", use: "Your test account opens a window for two approvals, to fUSD and fETH only. The operator posts, reveals and settles inside its own window: 300 transactions, 3,000 blocks, BlindSettlement only.", href: CONTRACT_URL, link: "BlindSettlement on QoreChain EVM" },
-    { name: "Account abstraction spending rule", what: "Linked keys with chain enforced limits", use: "The market maker agent commits prices with its own ed25519 key linked to the operator account. The chain lets it call commit on Blind and nothing else, 1 uqor per call and per day, for 29 days.", href: "/proof#agent", link: "The live rule" },
+    { name: "Commit and reveal", what: "Orders that cannot be read early", use: "Each swap goes on chain as a 32 byte fingerprint of the order, its ML-DSA-87 signature and a random salt. Your browser reveals it after the price is locked, and BlindSettlement checks it matches. There is no key for anyone to hold, steal or break.", href: tx(rec?.posts?.[0]?.hash, CONTRACT_URL), link: rec ? `A posted fingerprint in batch ${rec.batch}` : "The contract" },
+    { name: "QoreSeal", what: "Hybrid post quantum sealed envelopes", use: "Limit orders wait across batches while you are offline, so they are sealed with ML-KEM-1024 + X25519 to our standing key, and we reveal them.", href: LIMIT_SRC, link: "Where it runs" },
+    { name: "Scoped EVM windows", what: "Limits on what EVM keys do", use: "Your test account opens a window for two approvals, to fUSD and fETH only. The operator opens batches, posts fingerprints, relays reveals and settles inside its own window: 400 transactions, 3,000 blocks, BlindSettlement only.", href: CONTRACT_URL, link: "BlindSettlement on QoreChain EVM" },
+    { name: "Account abstraction spending rule", what: "Linked keys with chain enforced limits", use: "Only the maker account may commit a price, and the agent acts for it through its own ed25519 key. The chain lets that key call commit on Blind and nothing else, 1 uqor per call and per day. Every curve must also sit inside a mandate the owner signs with ML-DSA-87.", href: "/proof#agent", link: "The live rule" },
     { name: "QoreSign", what: "Hybrid signature checks before broadcast", use: "The relayer checks both halves of every transaction your browser sends, including ML-DSA-87 against the key registered on chain, before it broadcasts.", href: RELAY_SRC, link: "The relay check" },
     { name: "x/amm", what: "QoreChain's built in exchange", use: "The agent rebalances on pool 3 (fETH/fUSD) from a separate account. Every fill is compared with it, and the public lane swaps on it while our bot reads the public mempool.", href: tx(rec?.hedge?.hash, "/proof#bot"), link: rec?.hedge?.hash ? `Rebalance after batch ${rec.batch}` : "The bot's record" },
     { name: "@qorechain/pqc", what: "ML-DSA-87 in plain JavaScript", use: "Checks a limit order's signature the moment it arrives, before it waits for a batch.", href: LIMIT_SRC, link: "Where it runs" },
@@ -99,21 +100,22 @@ function Limits() {
         <div className="lit">
           <h3>In daylight: the chain checks</h3>
           <ul>
-            <li><b>The price came first.</b> The market maker's curve is on chain, signed, before the batch key is revealed.</li>
-            <li><b>The key is the one promised.</b> Its fingerprint is fixed on chain when the batch opens.</li>
+            <li><b>The price came first.</b> The market maker's curve is on chain, signed, while every order is still only a fingerprint.</li>
+            <li><b>Nobody read your order early.</b> Until the price is locked the chain holds only its fingerprint; the contract accepts a reveal only after the commit block and only if it matches.</li>
+            <li><b>Nobody was cut short.</b> The batch settles only once every order is revealed or the reveal window is over.</li>
             <li><b>The contract sets the price,</b> not the operator, from the locked curve and the orders.</li>
             <li><b>Every order is yours.</b> Each carries your post quantum signature, checked against the key QoreChain holds for your account.</li>
             <li><b>Your limit holds.</b> Nobody is filled below the minimum they signed.</li>
-            <li><b>The agent is on a leash.</b> Its key is linked to the operator account with a spending rule the chain enforces: the only call it can make is committing a price curve to Blind, and it can move at most 1 uqor a day.</li>
+            <li><b>The agent is on a leash.</b> Only the maker account may commit, and the agent's key for it may call nothing else (a spending rule QoreChain enforces). Every curve must sit inside the owner's ML-DSA-87 signed mandate: size, spread, distance from the last price, expiry.</li>
+            <li><b>The inventory stays put.</b> It leaves only to the treasury, only with the owner's ML-DSA-87 signature, and only within a daily limit.</li>
           </ul>
         </div>
         <div className="shade">
           <h3>In the shade: you trust the operator for</h3>
           <ul>
-            <li><b>Not peeking.</b> The operator holds the batch key, so it could read orders before the reveal. The chain proves the price was fixed before the reveal and that the contract computed it.</li>
-            <li><b>One service, two roles.</b> Today the operator and the market maker run as one service. So the promise that the market maker cannot price against your order rests on the operator not peeking.</li>
-            <li><b>Limit orders.</b> They are sealed to a standing key the operator can read, so they can wait across batches.</li>
-            <li><b>Including you.</b> The operator picks which posted orders go to settlement. Left out orders are listed with the reason, and anyone can open every order after the reveal.</li>
+            <li><b>Limit orders.</b> They wait across batches while you are offline, so they are sealed (QoreSeal, ML-KEM-1024) to our standing key and we reveal them. Swaps need no trust here: nobody but your browser ever holds them before the reveal.</li>
+            <li><b>Relaying your reveal.</b> Your browser hands its order to our server only after the price is locked on chain, and we relay it. If we failed to, your order would simply not fill; nothing moves without your reveal.</li>
+            <li><b>Including you.</b> The operator picks which revealed orders go to settlement, though the contract makes it wait for every reveal. Left out orders are listed with the reason.</li>
             <li><b>Price when alone.</b> Trading alone you pay about what x/amm charges plus 0.15%. When buyers and sellers meet in a batch, the lighter side gets a much better price than x/amm and the heavier side pays about the market maker's price for the rest.</li>
             <li><b>Testnet.</b> fUSD, fETH and QOR here are test tokens with no value.</li>
           </ul>

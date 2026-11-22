@@ -90,7 +90,7 @@ export default function Proof() {
         </div>
       </section>
 
-      <Qc name="On QoreChain, per batch" className="pq">orders sealed with QoreSeal, posted to BlindSettlement on QoreChain EVM, the curve and every order signature checked by pqcVerify 0x0A01, rebalancing on x/amm pool 3</Qc>
+      <Qc name="On QoreChain, per batch" className="pq">swaps posted to BlindSettlement on QoreChain EVM as fingerprints and revealed after the price is locked, limit orders sealed with QoreSeal, the curve and every order signature checked by pqcVerify 0x0A01, rebalancing on x/amm pool 3</Qc>
       <div className="filters tabs" role="tablist">
         {(["all", "app", "test"] as const).map((k) => <button key={k} role="tab" aria-selected={filter === k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>{k === "all" ? "All" : k === "app" ? "From the app" : "Test traders"}</button>)}
       </div>
@@ -102,7 +102,7 @@ export default function Proof() {
             <tr key={`${r.live ? "l" : "t"}${r.version ?? 2}-${r.batch}`} className="click" onClick={() => navigate(batchPath(r))}>
               <td data-k="Batch"><span className="bcell"><SlatGlyph state={r.settled ? "open" : "closed"} /><span className="mono">{r.batch}</span>{(r.version ?? 2) !== CURRENT_VERSION && <span className="small dim"> v{r.version ?? 2}</span>}</span></td>
               <td data-k="Who">{r.live ? "app" : "test traders"}{r.live && <div className="small dim">{ago(r.endedAt)}</div>}</td>
-              <td data-k="Blocks" className="mono small">{[r.create?.block, r.commit?.block, r.open?.block, r.settle?.block].filter(Boolean).map((x) => blockNo(x)).join(", ") || "none"}</td>
+              <td data-k="Blocks" className="mono small">{[r.create?.block, r.commit?.block, r.open?.block ?? r.reveals?.[r.reveals.length - 1]?.block, r.settle?.block].filter(Boolean).map((x) => blockNo(x)).join(", ") || "none"}</td>
               <td data-k="Curve" className="mono small">{r.commit ? <>bid {price(r.commit.bid)}<br />ask {price(r.commit.ask)}</> : "not committed"}</td>
               <td data-k="Price" className="mono">{r.settle ? price(r.settle.price) : r.error ? "stopped" : "not settled"}</td>
               <td data-k="Fills">

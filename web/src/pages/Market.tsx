@@ -245,7 +245,7 @@ export function OrderBook({ s, cur, lastBatch, mine }: {
         {!rows.length && <p className="bk-empty">{active ? "Reading this batch's sealed orders." : "No sealed orders waiting. Yours starts the next batch."}</p>}
       </div>
       <p className="bk-cap">{rows.length ? "Sealed until the price is locked. No side, no amount, for anyone." : "Orders show here as sealed rows: size in bytes and time, nothing else."}</p>
-      <Qc name="QoreSeal">each order is an ML-KEM-1024 + X25519 envelope, read back from its Sealed event on QoreChain EVM</Qc>
+      <Qc name="BlindSettlement">each swap is a 32 byte fingerprint on QoreChain EVM until the price is locked; its owner reveals it after</Qc>
 
       <div className="bk-mid">
         {commit ? (
