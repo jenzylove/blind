@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type BatchRec, type Batches, type BotStats, type Attempt, type Envelope } from "../lib/api";
 import { summarize, pct, inLabel, outLabel, price } from "../lib/fmt";
-import { Link, Edge, usePoll, useReveal, latestSettled, attemptOut } from "../ui";
+import { Link, Edge, usePoll, useReveal, latestSettled, attemptOut, agoWords } from "../ui";
 import { txUrl } from "../lib/qore";
 import Blind, { type BlindState } from "../Blind";
 
@@ -29,15 +29,6 @@ function heroRec(b: Batches | null): BatchRec | null {
 }
 
 /** "4 minutes ago", in words. */
-function agoWords(iso?: string): string {
-  if (!iso) return "";
-  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  const n = (v: number, u: string) => `${v} ${u}${v === 1 ? "" : "s"} ago`;
-  if (s < 60) return "just now";
-  if (s < 3600) return n(Math.round(s / 60), "minute");
-  if (s < 86400) return n(Math.round(s / 3600), "hour");
-  return n(Math.round(s / 86400), "day");
-}
 
 function SecHead({ n, title, lead, id }: { n: string; title: string; lead?: string; id?: string }) {
   return (

@@ -7,7 +7,7 @@ import {
 } from "../lib/chain";
 import { qorex, connectQorex, approveFromQorex, qorexTrader, plainQorexError, FAUCET_URL, QOREX_INSTALL_URL, type QorexConn } from "../lib/qorex";
 import { usd, eth, short, blockNo, pct, edgeBps } from "../lib/fmt";
-import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled, Qc, StepQc } from "../ui";
+import { useLive, useNow, phaseStep, phaseLine, phaseBlind, STEPS, TxLink, Copy, Link, refreshState, usePoll, latestSettled, Qc, StepQc, agoWords } from "../ui";
 import { txUrl, STEP_TECH, viaLinkedKey, COMMIT_PLAIN } from "../lib/qore";
 import Blind from "../Blind";
 import BatchPanel from "../BatchPanel";
@@ -73,6 +73,9 @@ export default function Trade() {
   const [tracked, setTracked] = useState<Tracked[]>(loadTracked);
   const [tab, setTab] = useState<"both" | "swap" | "limit">("both");
   const [duel, setDuel] = useState<Duel | null>(loadDuel);
+  // The QoreChain detail under each step stays one tap away.
+  const [tech, setTech] = useState<boolean>(() => { try { return localStorage.getItem("blind.tech") === "1"; } catch { return false; } });
+  const toggleTech = () => setTech((t) => { try { localStorage.setItem("blind.tech", t ? "0" : "1"); } catch { /* fine */ } return !t; });
   const [restoring, setRestoring] = useState(() => !!storedWords());
   const [mode, setModeS] = useState<Mode>(loadMode);
   const [wallet, setWallet] = useState<QorexConn | null>(null);
@@ -195,10 +198,11 @@ export default function Trade() {
   const shownDuel = duel && ownedBy(duel, trader) ? duel : null;
 
   return (
-    <div className="page wrap">
+    <div className={`page wrap apppage ${tech ? "tech" : ""}`}>
       <div className="apphead">
         <h1>Sealed swap</h1>
         <p>fUSD and fETH on QoreChain testnet. Your order is sealed here, in this browser, before it is sent.</p>
+        <button className="linkbtn techtoggle" onClick={toggleTech}>{tech ? "Hide what QoreChain does at each step" : "Show what QoreChain does at each step"}</button>
       </div>
       <div className="tradegrid">
         <div className="tradeside">
@@ -254,17 +258,18 @@ function BatchBar({ s, down, now, tracked }: { s: State | null; down: boolean; n
   const left = s?.phase === "intake" && s.batch.closesAt ? Math.max(0, Math.ceil((s.batch.closesAt - now) / 1000)) : null;
   const { v: b } = usePoll(api.batches, 6000);
   const state = s ? phaseBlind(s.phase) : "closed";
-  const thisRec = s && b ? [...b.live, ...b.testRuns].find((r) => r.batch === s.batch.id && r.settled) ?? null : null;
-  const shown = s?.phase === "hedging" ? thisRec : s?.phase === "waiting" ? latestSettled(b) : null;
+  const thisRec = s && b ? b.live.find((r) => r.batch === s.batch.id && r.settled) ?? null : null;
+  const shown = s?.phase === "hedging" ? thisRec : s?.phase === "waiting" ? latestSettled(b ? { live: b.live, testRuns: [] } : null) : null;
+  const idle = s?.phase === "waiting";
   const mine = s ? tracked.filter((t) => t.kind === "swap" && t.batch === s.batch.id) : [];
   return (
     <div className="livebatch">
       <div className="lbh">
         <div>
-          <div className="id">{s ? `Batch ${s.batch.id}` : "Batch"}</div>
-          <div className="pl">{down ? "The server is not answering. Retrying." : s ? phaseLine(s, now) : "Reading the chain."}</div>
+          <div className="id">{idle ? "Next batch" : s ? `Batch ${s.batch.id}` : "Batch"}</div>
+          <div className="pl">{down ? "The server is not answering. Retrying." : idle ? "Opens when someone sends a swap. Every swap sent in the next 20 seconds settles with it, at one price." : s ? phaseLine(s, now) : "Reading the chain."}</div>
         </div>
-        <div className="cd" title="Seconds until intake closes">{left !== null ? `0:${String(left).padStart(2, "0")}` : s?.phase === "waiting" ? "ready" : s ? "closed" : ""}</div>
+        <div className="cd" title="Seconds until this batch stops taking swaps">{left !== null ? `0:${String(left).padStart(2, "0")}` : ""}</div>
       </div>
       <Blind state={state} label={s ? `Batch ${s.batch.id}, ${state}` : "Batch"}>
         {shown ? <BatchPanel rec={shown} max={3} /> : (
@@ -279,7 +284,7 @@ function BatchBar({ s, down, now, tracked }: { s: State | null; down: boolean; n
         {STEPS.map((n, i) => <li key={n} className={i < step ? "done" : i === step ? "on" : ""}><span>{n}</span></li>)}
       </ol>
       <p className="cap">{state === "open"
-        ? `${shown ? `In daylight: batch ${shown.batch}, settled${shown.live ? "" : " by our test traders"}. ` : ""}The blind closes when the next batch takes orders.`
+        ? `${shown ? `The last batch, settled ${agoWords(shown.endedAt)}. ` : ""}The blind closes when the next batch takes swaps.`
         : state === "opening" ? "The price is locked on chain. The blind is opening." : "Closed. Orders in this batch stay sealed until the price is locked."}</p>
       {s && (step === 5
         ? <Qc name="x/amm pool 3">the agent rebalances from a separate account, hybrid signed</Qc>

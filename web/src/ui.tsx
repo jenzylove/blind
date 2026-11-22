@@ -301,3 +301,14 @@ export function AttemptLinks({ a }: { a: Attempt }) {
     </span>
   );
 }
+
+/** "3 minutes ago", in words. */
+export function agoWords(iso?: string): string {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  const n = (v: number, u: string) => `${v} ${u}${v === 1 ? "" : "s"} ago`;
+  if (s < 60) return "just now";
+  if (s < 3600) return n(Math.round(s / 60), "minute");
+  if (s < 86400) return n(Math.round(s / 3600), "hour");
+  return n(Math.round(s / 86400), "day");
+}

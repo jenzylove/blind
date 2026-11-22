@@ -590,3 +590,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .readout { display: grid; gap: 6px; margin: 4px 0 14px; color: var(--fg2); font-size: 15px; }
 .readout b { color: var(--fg); font-weight: 600; font-size: 17px; margin-bottom: 10px; }
+
+/* App page: QoreChain detail lines stay one tap away. */
+.apppage .qc { display: none; }
+.apppage.tech .qc { display: block; }
+.techtoggle { margin-top: 10px; font-size: 14px; }
