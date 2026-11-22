@@ -41,6 +41,8 @@ export class BatchLoop {
 
   constructor(public engine: Engine, standingSeedHex: string) {
     mkdirSync(DATA, { recursive: true });
+    // First boot on a fresh volume: start from the live batches recorded before the move.
+    if (!existsSync(STORE) && existsSync("deployments/batches-live.json")) writeFileSync(STORE, readFileSync("deployments/batches-live.json"));
     if (existsSync(STORE)) this.records = JSON.parse(readFileSync(STORE, "utf8"));
     if (existsSync("deployments/batches-curve.json")) this.history = JSON.parse(readFileSync("deployments/batches-curve.json", "utf8")).filter((r: any) => r.settled);
     this.next = this.freshKey();

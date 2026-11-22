@@ -35,6 +35,13 @@ const ENV_PATH = process.env.BLIND_ENV ?? ".env";
 export type Role = (typeof ROLES)[number];
 export function ensureKeys() {
   const env = readEnv(ENV_PATH);
+  // On a host the keys come from environment variables; never generate fresh ones there.
+  for (const r of ROLES) { const k = `${r}_MNEMONIC`; if (process.env[k]) env[k] = process.env[k]!; }
+  if (process.env.NODE_ENV === "production") {
+    const missing = ROLES.filter((r) => !env[`${r}_MNEMONIC`] && r !== "USER1" && r !== "USER2");
+    if (missing.length) throw new Error(`missing ${missing.map((r) => r + "_MNEMONIC").join(", ")}`);
+    return env;
+  }
   let changed = false;
   for (const r of ROLES) if (!env[`${r}_MNEMONIC`]) { env[`${r}_MNEMONIC`] = generateMnemonic(); changed = true; }
   if (changed) writeFileSync(ENV_PATH, Object.entries(env).map(([k, v]) => `${k}="${v}"`).join("\n") + "\n");
@@ -128,7 +135,9 @@ export function evmWallet(acc: UnifiedAccount) {
 
 // ---- Solidity (forge build output) ------------------------------------------
 export function artifact(name: string) {
-  const j = JSON.parse(readFileSync(`out/${name}.sol/${name}.json`, "utf8"));
+  const built = `out/${name}.sol/${name}.json`;
+  if (!existsSync(built) && name === "BlindSettlement") return { abi: JSON.parse(readFileSync("web/src/abi.json", "utf8")), bytecode: "0x" as `0x${string}` };
+  const j = JSON.parse(readFileSync(built, "utf8"));
   return { abi: j.abi, bytecode: j.bytecode.object as `0x${string}` };
 }
 
