@@ -15,7 +15,7 @@ export default function Landing() {
     <>
       <Hero rec={rec} />
       <Problem bot={bot} env={env} envMissing={envErr && !env} />
-      <How />
+      <How b={b} env={env} envMissing={envErr && !env} />
       <Record b={b} bot={bot} />
       <Faq />
     </>
@@ -184,27 +184,129 @@ function Problem({ bot, env, envMissing }: { bot: BotStats | null; env: Envelope
 }
 
 // ------------------------------------------------------------------ 02 how it works
-const HOW: { s: BlindState | "locked"; t: string }[] = [
-  { s: "closed", t: "You seal your swap in your browser." },
-  { s: "locked", t: "The market maker locks its price before anyone can open an order." },
-  { s: "open", t: "Every swap that arrived in the same 20 seconds settles together at one price." },
+// One blind follows the step being read. Each state shows real chain data: sealed bytes, the locked price, the fills.
+const HOW = [
+  "You seal your swap in your browser.",
+  "The market maker locks its price before anyone can open an order.",
+  "Every swap that arrived in the same 20 seconds settles together at one price.",
 ];
+const HOWSLATS = Array.from({ length: 12 }, (_, i) => i);
 
-function How() {
+/** The newest batch on the current contract with a locked price; a settled one first, so all three states tell one batch's story. */
+function howRec(b: Batches | null): BatchRec | null {
+  if (!b) return null;
+  const cur = b.versions?.current?.contract?.toLowerCase();
+  const mine = b.live.filter((r) => r.commit && (!cur || !r.contract || r.contract.toLowerCase() === cur));
+  return mine.find((r) => r.settled && r.settle && r.fills?.length) ?? mine[0] ?? null;
+}
+
+type HowData = { rec: BatchRec | null; loaded: boolean; env: Envelope | null; envMissing: boolean };
+
+function How({ b, env, envMissing }: { b: Batches | null; env: Envelope | null; envMissing: boolean }) {
+  const [reduced] = useState(() => matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const [active, setActive] = useState(reduced ? 2 : 0);
+  const [reached, setReached] = useState(reduced ? 2 : 0);
+  const list = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    if (reduced || !list.current) return;
+    const items = Array.from(list.current.children);
+    const inside = new Set<number>();
+    let cur = 0;
+    // A band across the middle of the screen: the step that enters it is the one being read.
+    const io = new IntersectionObserver((es) => {
+      let entered = -1;
+      for (const e of es) {
+        const i = items.indexOf(e.target);
+        if (e.isIntersecting) { inside.add(i); entered = i; } else inside.delete(i);
+      }
+      const next = entered >= 0 ? entered : inside.size && !inside.has(cur) ? [...inside][0] : cur;
+      if (next === cur) return;
+      cur = next;
+      setActive(next);
+      setReached((r) => Math.max(r, next));
+    }, { rootMargin: "-35% 0px -35% 0px" });
+    items.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [reduced]);
+  const rec = useMemo(() => howRec(b), [b]);
+  const d: HowData = { rec, loaded: !!b, env, envMissing };
   return (
     <section className="sec wrap" id="how">
       <SecHead n="02" title="How it works" />
-      <ol className="how3 rv">
-        {HOW.map((h, i) => (
-          <li key={i}>
-            <span className={`slats ${h.s}`} aria-hidden><i /><i /><i /><i /><i /><i /></span>
-            <span className="hn">{i + 1}</span>
-            <p>{h.t}</p>
-          </li>
-        ))}
-      </ol>
+      <div className={`how3 ${reduced ? "still" : ""}`}>
+        <div className="how3-stick"><HowBlind step={active} d={d} rows={3} /></div>
+        <ol className="how3-steps" ref={list}>
+          {HOW.map((t, i) => (
+            <li key={i} className={reduced || i === active ? "on" : ""} aria-current={!reduced && i === active ? "step" : undefined}>
+              <HowBlind step={i <= reached ? i : 0} d={d} rows={2} />
+              <span className="hn">{i + 1}</span>
+              <p>{t}</p>
+            </li>
+          ))}
+        </ol>
+      </div>
       <p className="quiet rv">Under the hood: post quantum keys and sealing on QoreChain. <Link to="/proof#how">See how</Link></p>
     </section>
+  );
+}
+
+function howCaption(step: number, { rec, loaded, env, envMissing }: HowData) {
+  if (step === 0) return env ? `A real sealed swap: ${env.bytes.toLocaleString("en-US")} bytes.` : envMissing ? "Every sealed swap lands on chain as 6,648 sealed bytes." : "Reading the newest sealed swap from the chain.";
+  if (!rec) return !loaded ? "Reading the latest swap from the chain." : step === 1 ? "No price locked yet. Send a swap from the app and it shows up here." : "No swap settled yet. Send one from the app and it shows up here.";
+  if (step === 1) return "Locked on chain before any order opens.";
+  return rec.settle ? "One transaction. Everyone at one price." : "This one is still open. It settles in one transaction.";
+}
+
+function HowBlind({ step, d, rows }: { step: number; d: HowData; rows: number }) {
+  const { rec, env } = d;
+  const hex = env ? (env.hexHead.match(/.{1,16}/g) ?? []).slice(0, 10).map((l) => l.match(/.{1,2}/g)!.join(" ")) : [];
+  const fills = rec?.fills ?? [];
+  return (
+    <figure className={`hb s${step}`}>
+      <div className="hb-glow" aria-hidden />
+      <div className="hb-rail" aria-hidden />
+      <div className="hb-cord" aria-hidden><i /><b /></div>
+      <div className="hb-win">
+        <div className="hb-day" aria-hidden />
+        <div className="hb-l hb-hex" aria-hidden>
+          {hex.map((l, i) => <div key={i}>{l}</div>)}
+        </div>
+        <div className="hb-l hb-lock" aria-hidden={step !== 1}>
+          {rec?.commit && (
+            <>
+              <div className="r4"><span>Buyers pay from</span><b>{price(rec.commit.ask)}</b></div>
+              <div className="r6"><span>Sellers get from</span><b>{price(rec.commit.bid)}</b></div>
+              <div className="r8"><small>fUSD per fETH</small></div>
+            </>
+          )}
+          {!rec?.commit && <div className="r6"><span>{d.loaded ? "No price locked yet." : "Reading the latest locked price."}</span></div>}
+        </div>
+        <div className="hb-l hb-fills" aria-hidden={step !== 2}>
+          {rec && fills.length > 0 && (
+            <>
+              <div className="hf-h"><span>{fills.length === 1 ? "The swap in it" : `The ${fills.length} swaps in it`}</span><span>vs the public pool</span></div>
+              {fills.slice(0, rows).map((f, i) => (
+                <div className="hf-r" key={i}>
+                  <span className="sd">{f.buy ? "Buy" : "Sell"}</span>
+                  <span className="what">{inLabel(f)} <span className="arr">for</span> {outLabel(f)}</span>
+                  <Edge f={f} />
+                </div>
+              ))}
+              {fills.length > rows && <div className="hf-more">and {fills.length - rows} more</div>}
+            </>
+          )}
+          {!rec?.settle && <p className="hf-none">{!d.loaded ? "Reading the latest swap." : rec ? "This one has not settled yet." : "No swap has settled yet."}</p>}
+          {rec?.settle && (
+            <div className="hf-p">
+              <span>One price for everyone</span>
+              <b>{price(rec.settle.price)} <small>fUSD per fETH</small></b>
+            </div>
+          )}
+        </div>
+        <div className="hb-slats" aria-hidden>{HOWSLATS.map((i) => <i key={i} style={{ ["--i" as any]: i }} />)}</div>
+      </div>
+      <figcaption className="hb-cap"><span key={step}>{howCaption(step, d)}</span></figcaption>
+    </figure>
   );
 }
 
