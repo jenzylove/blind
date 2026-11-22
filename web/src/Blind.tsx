@@ -13,9 +13,13 @@ let glOwner: object | null = null;
  * Falls back to a plain CSS panel when WebGL is missing, `flat` is set, or another blind already owns WebGL.
  * The renderer draws only while the slats move, and waits while the blind is off screen or the tab is hidden.
  */
+const SLATS = Array.from({ length: 12 }, (_, i) => i);
+
 export default function Blind({ state, children, className = "", label, flat: flatProp = false }: { state: BlindState; children: ReactNode; className?: string; label?: string; flat?: boolean }) {
   // ?gl=0 forces the CSS blind (to compare, and as an escape hatch on GPUs that stall).
-  const flat = flatProp || (typeof location !== "undefined" && new URLSearchParams(location.search).get("gl") === "0");
+  const flat = flatProp;
+  // The CSS slats are the default: WebGL stalled real GPUs on some laptops. ?gl=1 turns the 3D version back on.
+  const webgl = typeof location !== "undefined" && new URLSearchParams(location.search).get("gl") === "1";
   const stage = useRef<HTMLDivElement>(null);
   const win = useRef<HTMLDivElement>(null);
   const target = useRef(state);
@@ -26,7 +30,7 @@ export default function Blind({ state, children, className = "", label, flat: fl
   useEffect(() => { kick.current(); }, [state]);
 
   useEffect(() => {
-    if (flat || glOwner) return;
+    if (!webgl || flat || glOwner) return;
     const me = {};
     glOwner = me;
     const el = stage.current!, w = win.current!;
@@ -184,7 +188,7 @@ export default function Blind({ state, children, className = "", label, flat: fl
       <div className="blind-glow" aria-hidden />
       <div ref={win} className="blind-win">
         <div className="blind-in">{children}</div>
-        <div className="blind-shade" aria-hidden />
+        <div className="blind-shade" aria-hidden>{!flat && SLATS.map((i) => <i key={i} style={{ ["--i" as any]: i }} />)}</div>
       </div>
     </div>
   );
