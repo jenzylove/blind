@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type
 import { api, type State, type Phase, type Fill, type BatchRec, type Attempt } from "./lib/api";
 import { short, pct, edgeBps, price, blockNo, eth, usd } from "./lib/fmt";
 import { EXPLORER } from "./lib/const";
-import { REPO, KITS, txUrl, STEP_TECH } from "./lib/qore";
+import { REPO, txUrl, STEP_TECH } from "./lib/qore";
 import type { BlindState } from "./Blind";
 
 export { REPO };
@@ -267,7 +267,6 @@ function Footer() {
         </div>
         <div className="base">
           <span>Built on QoreChain testnet (qorechain-diana)</span>
-          <span className="kits">{KITS.map((k) => <a key={k} href={`https://www.npmjs.com/package/${k}`} target="_blank" rel="noreferrer">{k}</a>)}</span>
         </div>
       </div>
     </footer>
