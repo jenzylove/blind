@@ -3,9 +3,13 @@ import { api, type BatchRec } from "../lib/api";
 import { price, blockNo, summarize, pct, inLabel, outLabel, usd, ago, type Summary } from "../lib/fmt";
 import { Edge, usePoll, navigate, Link, SlatGlyph } from "../ui";
 
+// Function selectors of BlindSettlement, to show the rule in words.
+const SELECTORS: Record<string, string> = { "0x7368a8ce": "create", "0x5f274211": "post", "0x6225710f": "commit", "0x95329838": "open", "0x75f97094": "settle" };
+
 export default function Proof() {
   const { v: b, err } = usePoll(api.batches, 10000);
   const { v: v1 } = usePoll(api.batchesV1, 600000);
+  const { v: ag } = usePoll(api.agent, 120000);
   const [filter, setFilter] = useState<"all" | "app" | "test">("all");
   const live = b?.live ?? [];
   const test = b ? [...b.testRuns].reverse() : [];
@@ -29,6 +33,23 @@ export default function Proof() {
         <div><b>{b ? `${cur.better} of ${cur.compared}` : "…"}</b><span>fills beat x/amm</span></div>
         <div><b>{b && cur.markoutUsd !== null ? `${cur.markoutUsd >= 0 ? "+" : "−"}${Math.abs(cur.markoutUsd).toFixed(3)}` : "…"}</b><span>market maker result in fUSD, 30 blocks after each batch</span></div>
       </div>
+
+      <section className="vfix">
+        <h2>The agent's leash, read from the chain</h2>
+        <p>The market maker agent does not hold the operator's key. It signs with its own key, linked to the operator account with a spending rule that QoreChain enforces on every call. Anything outside the rule is refused by the chain, not by our code.</p>
+        {ag ? (
+          <div className="vrows">
+            <div className="vrow kv"><span>Agent key linked</span><b>{ag.linked ? "yes" : "no"}</b></div>
+            {ag.rules.rules.filter((r) => r.enabled).map((r) => (
+              <div key={r.id}>
+                <div className="vrow kv"><span>May call</span><b>{r.allowedEvmCalls.map((c) => SELECTORS[c.split("/")[1]] ?? c.split("/")[1]).join(", ")} on Blind only</b></div>
+                <div className="vrow kv"><span>Value it may move</span><b>{r.perTxLimit} uqor per call, {r.dailyLimit} uqor a day</b></div>
+              </div>
+            ))}
+            {ag.key && <div className="vrow kv"><span>Key expires</span><b>{new Date(Number(ag.key.expiryUnix) * 1000).toISOString().slice(0, 10)}</b></div>}
+          </div>
+        ) : <p className="dim">Reading the rule from the chain.</p>}
+      </section>
 
       <section className="vfix">
         <h2>The first version missed. Here is the fix.</h2>

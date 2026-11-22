@@ -4,9 +4,10 @@
 // chain logs -> one settle() -> hedge on x/amm from a separate account.
 import { randomBytes } from "node:crypto";
 import { encodeAbiParameters, decodeAbiParameters, keccak256, toHex, hexToBytes, encodeFunctionData, type Hex } from "viem";
-import { pqcSign, type UnifiedAccount } from "@qorechain/sdk";
+import { pqcSign, buildPhantomExecuteEvm, fetchAuthNonce, resolveEvmAuthDigestVersion, type UnifiedAccount } from "@qorechain/sdk";
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { seal, open as openEnvelope, sealKeysFromSeed, recipientOf } from "@qorechain/qoreseal";
-import { evmWallet, pub, send, sleep, artifact, TOKENS, denom, ERC20_ABI, NET, balances } from "../chain.ts";
+import { evmWallet, pub, send, sleep, broadcast, waitTx, artifact, TOKENS, denom, ERC20_ABI, NET, balances } from "../chain.ts";
 import { makeQuote, clearingPrice, cpIn, SCALE, type Pool, type Quote } from "../agent/policy.ts";
 
 export const POOL_ID = "3";
@@ -40,16 +41,52 @@ export async function makerInventory(settlement: Hex, hedger: UnifiedAccount) {
   };
 }
 
+/** The agent's ed25519 key, linked on chain to the settler account with spending rules. */
+export interface AgentLink { sk: Uint8Array; pk: Uint8Array }
+export const agentLinkFrom = (hexSeed?: string): AgentLink | undefined => {
+  if (!hexSeed) return undefined;
+  const sk = hexToBytes((hexSeed.startsWith("0x") ? hexSeed : `0x${hexSeed}`) as Hex);
+  return { sk, pk: ed25519.getPublicKey(sk) };
+};
+
 export class Engine {
-  constructor(public settlement: Hex, public settler: UnifiedAccount, public agent: UnifiedAccount, public hedger: UnifiedAccount) {}
+  constructor(public settlement: Hex, public settler: UnifiedAccount, public agent: UnifiedAccount, public hedger: UnifiedAccount, public link?: AgentLink) {}
 
   async tx(functionName: string, args: any[], margin = 1.25) {
     const data = encodeFunctionData({ abi, functionName, args });
     const est = await pub.estimateGas({ account: this.settler.evm as Hex, to: this.settlement, data });
+    if (this.link) return this.agentTx(functionName, data, Math.ceil(Number(est) * margin));
     const hash = await evmWallet(this.settler).sendTransaction({ to: this.settlement, data, gas: BigInt(Math.ceil(Number(est) * margin)), ...FEES });
     const rc = await pub.waitForTransactionReceipt({ hash });
     if (rc.status !== "success") throw new Error(`${functionName} reverted: ${hash}`);
     return { hash, block: Number(rc.blockNumber), gas: Number(rc.gasUsed) };
+  }
+
+  /** The agent's call, made with its linked key under the account's on-chain spending rule
+   *  (only BlindSettlement's batch functions). The settler only relays and pays the fee. */
+  private async agentTx(functionName: string, data: Hex, gasLimit: number) {
+    const link = this.link!;
+    const { nonce } = await fetchAuthNonce({ rest: NET.rest, address: this.settler.cosmos, pubkey: link.pk });
+    const digestVersion = await resolveEvmAuthDigestVersion({ rest: NET.rest } as any).catch(() => "v2");
+    const msg = await buildPhantomExecuteEvm({
+      wallet: { publicKey: link.pk, signMessage: async (m: Uint8Array) => ed25519.sign(m, link.sk) },
+      relayer: this.settler.cosmos, chainId: NET.chainId, account: this.settler.cosmos,
+      to: this.settlement, value: "0", data: hexToBytes(data), gasLimit, nonce, digestVersion: digestVersion as any,
+    });
+    const cosmosHash = await broadcast(this.settler, "hybrid", [msg], String(gasLimit + 250_000));
+    const r = await waitTx(cosmosHash);
+    if (r.code) throw new Error(`${functionName} refused: ${String(r.log).slice(0, 200)} (${cosmosHash})`);
+    const ev = (t: string) => r.events.filter((e: any) => e.type === t);
+    const failed = ev("abstractaccount_execution_failed")[0];
+    if (failed) throw new Error(`${functionName} failed: ${failed.attributes.find((a: any) => a.key === "reason")?.value} (${cosmosHash})`);
+    const evmHash = ev("ethereum_tx").flatMap((e: any) => e.attributes).find((a: any) => a.key === "ethereumTxHash")?.value as Hex | undefined;
+    let gas = 0;
+    if (evmHash) {
+      const rc = await pub.waitForTransactionReceipt({ hash: evmHash });
+      if (rc.status !== "success") throw new Error(`${functionName} reverted: ${evmHash}`);
+      gas = Number(rc.gasUsed);
+    }
+    return { hash: (evmHash ?? cosmosHash) as Hex, cosmosHash, block: r.height, gas, via: "agent key" as const };
   }
 
   read<T>(functionName: string, args: any[]) {

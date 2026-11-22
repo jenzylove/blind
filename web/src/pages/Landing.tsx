@@ -193,7 +193,7 @@ function ProofSec({ b }: { b: Batches | null }) {
 function Limits() {
   return (
     <section className="sec wrap" id="limits">
-      <SecHead n="04" title="What the chain checks, and what it does not" lead="Sealing stops bots and the market maker from reading your order. It does not remove every party you trust." />
+      <SecHead n="04" title="What the chain checks, and what it does not" lead="Sealing stops bots from reading your order, and the market maker locks its price before any order opens. It does not remove every party you trust." />
       <div className="limits rv">
         <div className="lit">
           <h3>In daylight: the chain checks</h3>
@@ -203,12 +203,14 @@ function Limits() {
             <li><b>The contract sets the price,</b> not the operator, from the locked curve and the orders.</li>
             <li><b>Every order is yours.</b> Each carries your post quantum signature, checked against the key QoreChain holds for your account.</li>
             <li><b>Your limit holds.</b> Nobody is filled below the minimum they signed.</li>
+            <li><b>The agent is on a leash.</b> Its key is linked to the operator account with a spending rule the chain enforces: it may call only Blind's five batch functions and move at most 1 uqor a day.</li>
           </ul>
         </div>
         <div className="shade">
           <h3>In the shade: you trust the operator for</h3>
           <ul>
             <li><b>Not peeking.</b> The operator holds the batch key, so it could read orders before the reveal. The chain proves the price was fixed before the reveal and that the contract computed it.</li>
+            <li><b>One service, two roles.</b> Today the operator and the market maker run as one service. So the promise that the market maker cannot price against your order rests on the operator not peeking.</li>
             <li><b>Limit orders.</b> They are sealed to a standing key the operator can read, so they can wait across batches.</li>
             <li><b>Including you.</b> The operator picks which posted orders go to settlement. Left out orders are listed with the reason, and anyone can open every order after the reveal.</li>
             <li><b>Price when alone.</b> Trading alone you pay about what x/amm charges plus 0.15%. When buyers and sellers meet in a batch, both do better than x/amm.</li>

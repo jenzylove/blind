@@ -42,6 +42,7 @@ export const api = {
   state: () => j<State>("/api/state"),
   batches: () => j<Batches>("/api/batches"),
   batchesV1: () => j<BatchRec[]>("/api/batches/v1"),
+  agent: () => j<AgentInfo>("/api/agent"),
   batch: (id: number) => j<BatchRec>(`/api/batch/${id}`),
   quote: (side: "buy" | "sell", amount: bigint) => j<Quote>(`/api/quote?side=${side}&amount=${amount}`),
   me: (evm: string) => j<{ fUSD: string; fETH: string; approved: { fUSD: boolean; fETH: boolean } }>(`/api/me/${evm}`),
@@ -59,3 +60,12 @@ export const api = {
   order: async (envelope: string) => { const r = await post("/api/order", { envelope }); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; },
   limit: async (envelope: string) => { const r = await post("/api/limit", { envelope }); return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) }; },
 };
+
+/** The agent's linked key and the spending rule the chain enforces on it (read live from chain). */
+export interface AgentInfo {
+  account: string;
+  settlement: string;
+  linked: boolean;
+  key: { pubkeyHex: string; expiryUnix: string; label: string; revoked: boolean; permissions: string[] } | null;
+  rules: { rules: { id: string; perTxLimit: string; dailyLimit: string; allowedDenoms: string[]; enabled: boolean; allowedEvmCalls: string[] }[] };
+}

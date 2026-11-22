@@ -238,7 +238,7 @@ function Footer() {
           <div>
             <h4>On chain</h4>
             {s ? <a href={`${EXPLORER}/address/${s.contract}`} target="_blank" rel="noreferrer">Blind contract <span className="mono">{short(s.contract, 6, 4)}</span></a> : <span className="dim">Reading the chain</span>}
-            <a href="https://explore.qore.network" target="_blank" rel="noreferrer">QoreChain testnet explorer</a>
+            <a href="https://explore.qore.network" target="_blank" rel="noreferrer">QoreChain explorer</a> <span className="dim small">(switch it to Testnet, top right)</span>
           </div>
         </div>
         <div className="base"><span>QoreChain testnet, chain qorechain-diana</span><span>MIT licence</span></div>

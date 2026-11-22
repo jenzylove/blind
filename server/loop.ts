@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { decodeAbiParameters, keccak256, toHex, hexToBytes, type Hex } from "viem";
-import { pqcSign, type UnifiedAccount } from "@qorechain/sdk";
+import { pqcSign, pqcVerify, type UnifiedAccount } from "@qorechain/sdk";
 import { evmWindowStatus } from "@qorechain/evm";
 import { open as openEnvelope, sealKeysFromSeed, recipientOf } from "@qorechain/qoreseal";
 import { pub, send, windowMsg, NET, artifact } from "../src/chain.ts";
@@ -18,6 +18,9 @@ const { abi } = artifact("BlindSettlement");
 const INTAKE_MS = Number(process.env.INTAKE_MS ?? 20_000);
 const DATA = process.env.DATA_DIR ?? "data";
 const STORE = `${DATA}/batches.json`;
+const STANDING_STORE = `${DATA}/standing.json`;
+const MAX_ORDERS = 32;
+const MAX_STANDING = 40;
 const purposeOf = (settlement: string, id: bigint | number) => `blind-order-v1:${settlement.toLowerCase()}:${id}`;
 export const STANDING_PURPOSE = (settlement: string) => `blind-standing-v1:${settlement.toLowerCase()}`;
 
@@ -48,6 +51,15 @@ export class BatchLoop {
     this.next = this.freshKey();
     this.standingSeed = hexToBytes(standingSeedHex as Hex);
     if (this.standingSeed.length !== 32) throw new Error("STANDING_SEED must be 32 bytes hex");
+    // Limit orders survive a restart.
+    if (existsSync(STANDING_STORE)) {
+      this.standing = JSON.parse(readFileSync(STANDING_STORE, "utf8")).map((x: any) => ({ ...x,
+        o: { ...x.o, batch: BigInt(x.o.batch), expiry: BigInt(x.o.expiry), amountIn: BigInt(x.o.amountIn), minOut: BigInt(x.o.minOut), nonce: BigInt(x.o.nonce) } }));
+    }
+  }
+
+  private saveStanding() {
+    writeFileSync(STANDING_STORE, JSON.stringify(this.standing, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
   }
 
   get settlement() { return this.engine.settlement; }
@@ -71,6 +83,7 @@ export class BatchLoop {
 
   /** Keep a scoped window open on the settler: target = the settlement contract only. */
   async ensureWindow() {
+    if (this.engine.link) return; // the agent's linked key calls the contract under its spending rule; no window needed
     const w = await evmWindowStatus({ rest: NET.rest, address: this.engine.settler.cosmos });
     const remainingTxs = Number((w as any).remainingTxs ?? (w as any).remaining_txs ?? 0);
     const remainingBlocks = Number((w as any).remainingBlocks ?? (w as any).remaining_blocks ?? 0);
@@ -110,10 +123,47 @@ export class BatchLoop {
     const pt = openEnvelope({ chainId: NET.chainId, purpose: STANDING_PURPOSE(this.settlement), envelope: hexToBytes(envelope), keys });
     const [o, sig] = decodeAbiParameters(ORDER_T, toHex(pt)) as unknown as [Order, Hex];
     if (o.batch !== 0n) throw new Error("a standing order must have batch 0");
-    const r = await this.submit(envelope);
+    if (o.amountIn <= 0n) throw new Error("amount must be positive");
+    const head = await pub.getBlockNumber();
+    if (o.expiry <= head || o.expiry > head + 50_000n) throw new Error("expiry must be within the next 50,000 blocks");
+    if (this.standing.length >= MAX_STANDING) throw new Error("too many open limit orders right now; try again later");
     const hash = await this.engine.read<Hex>("orderHash", [o]);
+    if (this.standing.some((s) => s.hash === hash) || (await this.engine.read<boolean>("used", [hash]))) throw new Error("this order is already in");
+    // The same checks the contract makes at settlement, done now so a bad order can never stall a batch.
+    const key = await this.engine.read<Hex>("keyOf", [o.user]).catch(() => null);
+    if (!key) throw new Error("the order's account has no proven post quantum key on chain");
+    const msg = await this.engine.read<Hex>("orderMessage", [o]);
+    if (!pqcVerify(hexToBytes(key), hexToBytes(msg), hexToBytes(sig))) throw new Error("the order's signature does not verify");
+    const r = await this.submit(envelope);
     this.standing.push({ o, sig, postedTx: r.hash, hash });
+    this.saveStanding();
     return { ...r, orderHash: hash };
+  }
+
+  /** Simulate settle; on a revert, name the order that causes it. Null when the batch would settle. */
+  private async findBreaker(id: bigint, orders: { o: Order; sig: Hex }[]): Promise<{ index: number; reason: string } | null> {
+    const sim = async (os: { o: Order; sig: Hex }[]) => {
+      try {
+        await pub.simulateContract({ account: this.engine.settler.evm as Hex, address: this.settlement, abi, functionName: "settle", args: [id, os.map((x) => x.o), os.map((x) => x.sig)] });
+        return null;
+      } catch (e: any) {
+        const d = e?.cause?.data ?? e?.data;
+        return { name: (d?.errorName as string) ?? "revert", args: (d?.args ?? []) as any[] };
+      }
+    };
+    const why: Record<string, string> = {
+      BadSignature: "the order's signature does not verify", KeyNotProven: "the account has no proven post quantum key",
+      TransferFailed: "not enough balance or allowance when the batch settled", BadOrder: "expired, empty or for another batch",
+      MinOut: "price outside the user's limit",
+    };
+    const all = await sim(orders);
+    if (!all) return null;
+    if ((all.name === "BadOrder" || all.name === "MinOut") && all.args.length) return { index: Number(all.args[0]), reason: why[all.name] };
+    for (let i = 0; i < orders.length; i++) {
+      const one = await sim([orders[i]]);
+      if (one && one.name !== "MinOut" && one.name !== "TooBig") return { index: i, reason: why[one.name] ?? `settle would revert (${one.name})` };
+    }
+    throw new Error(`settle would revert (${all.name}) and no single order explains it`);
   }
 
   private async close() {
@@ -160,6 +210,18 @@ export class BatchLoop {
       for (const s of this.standing) orders.push({ o: s.o, sig: s.sig, standing: true });
       rec.opened = orders.length;
 
+      // The same order twice, or one already filled, would make settle revert for everyone: leave it out.
+      const seen = new Set<string>();
+      const unique: typeof orders = [];
+      for (const x of orders) {
+        const h = (await this.engine.read<Hex>("orderHash", [x.o])).toLowerCase();
+        if (seen.has(h)) { rec.dropped.push({ user: x.o.user, reason: "a copy of an order already in this batch", standing: x.standing }); continue; }
+        if (await this.engine.read<boolean>("used", [h])) { rec.dropped.push({ user: x.o.user, reason: "this order was already filled", standing: x.standing }); continue; }
+        seen.add(h); unique.push(x);
+      }
+      orders = unique;
+      while (orders.length > MAX_ORDERS) { const x = orders.pop()!; rec.dropped.push({ user: x.o.user, reason: "more than 32 orders in one batch", standing: x.standing }); }
+
       // Leave out what cannot fill; every drop of a batch order is recorded. Standing orders just wait.
       for (;;) {
         const qi = orders.filter((x) => x.o.buy).reduce((a, x) => a + x.o.amountIn, 0n);
@@ -179,6 +241,17 @@ export class BatchLoop {
           if (!orders[k].standing) rec.dropped.push({ user: orders[k].o.user, reason: "batch net larger than the maker's committed size" });
           orders.splice(k, 1); continue;
         }
+        // Dry run the settlement. If one order would make it revert (bad signature, no key, no balance or
+        // allowance), leave that order out with the reason and price the rest again.
+        if (orders.length) {
+          const brk = await this.findBreaker(id, orders);
+          if (brk) {
+            const x = orders[brk.index];
+            rec.dropped.push({ user: x.o.user, reason: brk.reason, standing: x.standing });
+            if (x.standing) { this.standing = this.standing.filter((s) => s.o !== x.o); this.saveStanding(); }
+            orders.splice(brk.index, 1); continue;
+          }
+        }
         break;
       }
       if (!orders.length) { rec.settled = false; this.log(`batch ${id}: nothing fillable`); return; }
@@ -188,6 +261,7 @@ export class BatchLoop {
       const fills = (await pub.getContractEvents({ address: this.settlement, abi, eventName: "Filled", args: { batch: id }, fromBlock: BigInt(st.block), toBlock: BigInt(st.block) })) as any[];
       const filledHashes = new Set(fills.map((f) => f.args.orderHash.toLowerCase()));
       this.standing = this.standing.filter((s) => !filledHashes.has(s.hash.toLowerCase()));
+      this.saveStanding();
       const poolAt = await readPool(st.block - 1).catch(() => pool);
       rec.settled = true;
       rec.settle = { ...st, price: ev.args.price.toString(), makerBase: ev.args.makerBase.toString(), makerQuote: ev.args.makerQuote.toString() };

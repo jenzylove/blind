@@ -16,7 +16,8 @@ export const CHAIN_ID = "qorechain-diana";
 export const EVM_RPC = "https://evm-testnet.qore.host";
 import { EXPLORER } from "./const";
 export { EXPLORER };
-export const txUrl = (h: string) => `${EXPLORER}/tx/${h.startsWith("0x") ? h : h.toUpperCase()}`;
+// The explorer indexes Cosmos hashes, so our server looks up the Cosmos hash of an EVM transaction and redirects.
+export const txUrl = (h: string) => `/api/explorer/tx/${h}`;
 export const SCALE = 10n ** 18n;
 const FEES = { maxFeePerGas: 150_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n };
 const rest = () => `${location.origin}/api/rest`;

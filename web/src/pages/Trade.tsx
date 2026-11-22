@@ -241,7 +241,7 @@ function AccountPanel(p: { restoring: boolean; acc: UnifiedAccount | null; me: M
               <button className="btn day" onClick={p.onRun} disabled={p.busy}>
                 {p.busy ? "Working…" : p.acc ? (p.err ? "Try again" : "Finish setting up") : "Get a test account"}
               </button>
-              {!p.acc && !p.busy && <p className="dim small">No wallet, no sign up. One button runs steps 1 to 4 in about 30 seconds. The faucet gives each browser one test account a day.</p>}
+              {!p.acc && !p.busy && <p className="dim small">No wallet, no sign up. One button runs steps 1 to 4 in about 30 seconds. The faucet gives each network one test account a day.</p>}
               {p.msg && <div className="msg">{p.msg}</div>}
               {p.err && <div className="msg err">{p.err}</div>}
             </div>

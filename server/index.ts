@@ -9,14 +9,20 @@ import { isHex, type Hex } from "viem";
 import { fetchPqcStatus } from "@qorechain/sdk";
 import { evmWindowStatus } from "@qorechain/evm";
 import { account, send, state, readEnv, NET, denom, CONVERT_COIN, TOKENS, pub, ERC20_ABI } from "../src/chain.ts";
-import { Engine, readPool, makerInventory } from "../src/engine/batch.ts";
+import { Engine, readPool, makerInventory, agentLinkFrom } from "../src/engine/batch.ts";
+import { fetchSpendingRules, fetchAuthenticators } from "@qorechain/sdk";
+import { toHex } from "viem";
 import { makeQuote, clearingPrice, cpOut, SCALE } from "../src/agent/policy.ts";
 import { BatchLoop } from "./loop.ts";
 
 const [op, agent, hedger] = await Promise.all([account("OPERATOR"), account("AGENT"), account("HEDGER")]);
 const dep = state.read();
 const settlement = dep.settlement as Hex;
-const engine = new Engine(settlement, op, agent, hedger);
+// The market maker agent acts through its own ed25519 key, linked on chain to the settler account with a
+// spending rule that allows only BlindSettlement's batch functions (scripts/link-agent.ts).
+const agentLink = agentLinkFrom(process.env.AGENT_LINK_KEY ?? readEnv(process.env.BLIND_ENV ?? ".env").AGENT_LINK_KEY);
+if (!agentLink && process.env.NODE_ENV === "production") throw new Error("AGENT_LINK_KEY is required");
+const engine = new Engine(settlement, op, agent, hedger, agentLink);
 const STANDING_SEED = process.env.STANDING_SEED ?? readEnv(process.env.BLIND_ENV ?? ".env").STANDING_SEED;
 if (!STANDING_SEED) throw new Error("STANDING_SEED (32 bytes hex) is required");
 const loop = new BatchLoop(engine, STANDING_SEED);
@@ -36,6 +42,17 @@ const app = new Hono();
 const ip = (c: any) => c.req.header("x-forwarded-for")?.split(",").pop()?.trim() || c.req.header("x-real-ip") || "local";
 const bad = (c: any, msg: string, code = 400) => c.json({ error: msg }, code);
 
+// Posting an order costs the operator gas, so each network gets a modest allowance.
+const posts = new Map<string, number[]>();
+function postLimited(c: any): string | null {
+  const k = ip(c), now = Date.now();
+  const recent = (posts.get(k) ?? []).filter((t) => now - t < 86_400_000);
+  if (recent.filter((t) => now - t < 60_000).length >= 6) return "too many orders in the last minute; wait a moment";
+  if (recent.length >= 120) return "daily order limit reached for this network";
+  recent.push(now); posts.set(k, recent);
+  return null;
+}
+
 // ------------------------------------------------------------------ market and batch state
 app.get("/api/state", async (c) => {
   const [count, pool] = await Promise.all([engine.read<bigint>("batchCount", []), readPool()]);
@@ -52,6 +69,34 @@ app.get("/api/state", async (c) => {
     pool: { id: 3, base: pool.base.toString(), quote: pool.quote.toString(), mid: ((pool.quote * SCALE) / pool.base).toString() },
     standingOpen: loop.standing.length,
   });
+});
+
+/** Explorer links: the explorer indexes Cosmos hashes, so resolve an EVM hash first, then redirect. */
+const cosmosOf = new Map<string, string>();
+app.get("/api/explorer/tx/:hash", async (c) => {
+  const h = c.req.param("hash");
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(h)) return bad(c, "not a transaction hash");
+  if (!h.startsWith("0x")) return c.redirect(`https://explore.qore.network/tx/${h.toUpperCase()}`);
+  let cos = cosmosOf.get(h.toLowerCase());
+  if (!cos) {
+    const q = encodeURIComponent(`ethereum_tx.ethereumTxHash='${h.toLowerCase()}'`);
+    const r = await fetch(`${NET.rest}/cosmos/tx/v1beta1/txs?query=${q}&pagination.limit=1`).then((x) => x.json()).catch(() => null) as any;
+    cos = r?.tx_responses?.[0]?.txhash;
+    if (cos) cosmosOf.set(h.toLowerCase(), cos);
+  }
+  return c.redirect(cos ? `https://explore.qore.network/tx/${cos}` : `https://explore.qore.network/search?q=${h}`);
+});
+
+/** The agent's linked key and the spending rule the chain enforces on it, read live from the chain. */
+let agentCache: { at: number; v: any } | null = null;
+app.get("/api/agent", async (c) => {
+  if (agentCache && Date.now() - agentCache.at < 60_000) return c.json(agentCache.v);
+  const [rules, keys] = await Promise.all([fetchSpendingRules({ rest: NET.rest, address: op.cosmos }), fetchAuthenticators({ rest: NET.rest, address: op.cosmos })]);
+  const pk = agentLink ? toHex(agentLink.pk).slice(2).toLowerCase() : null;
+  const key = (keys as any[]).find((k) => String(k.pubkeyHex).toLowerCase() === pk) ?? null;
+  const v = JSON.parse(JSON.stringify({ account: op.cosmos, settlement, linked: !!key && !key.revoked, key, rules }, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
+  agentCache = { at: Date.now(), v };
+  return c.json(v);
 });
 
 /** What x/amm pays right now for this input, and what Blind would pay if the order were alone. */
@@ -79,6 +124,7 @@ app.get("/api/quote", async (c) => {
 
 // ------------------------------------------------------------------ orders
 app.post("/api/order", async (c) => {
+  const lim = postLimited(c); if (lim) return bad(c, lim, 429);
   const b = await c.req.json().catch(() => ({}));
   if (!isHex(b.envelope) || b.envelope.length < 200) return bad(c, "envelope: sealed order as 0x hex");
   try { return c.json(await loop.submit(b.envelope as Hex)); }
@@ -86,6 +132,7 @@ app.post("/api/order", async (c) => {
 });
 
 app.post("/api/limit", async (c) => {
+  const lim = postLimited(c); if (lim) return bad(c, lim, 429);
   const b = await c.req.json().catch(() => ({}));
   if (!isHex(b.envelope)) return bad(c, "envelope: standing order sealed to standingKey, as 0x hex");
   try { return c.json(await loop.submitStanding(b.envelope as Hex)); }
