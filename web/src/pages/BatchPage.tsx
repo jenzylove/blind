@@ -23,13 +23,13 @@ export default function BatchPage({ id }: { id: number }) {
     ...posts.map((p: any, i: number) => [`Order ${i + 1} posted`, p.fingerprint ? `Fingerprint ${String(p.fingerprint).slice(0, 10)}…, 32 bytes. No side, no amount` : "A 32 byte fingerprint", p.block, p.hash, i === 0 ? <StepQc i={1} /> : undefined] as [string, string, number, string, ReactNode?]),
     ["Price locked", "The market maker's signed curve, inside the owner's mandate", r.commit?.block, r.commit?.hash, <StepQc i={2} href="/proof#agent" link="the rule" />],
     ...reveals.filter((x) => x.hash).map((x: any) => [`Order ${Number(x.index) + 1} revealed`, x.by === "owner" ? "By its owner's browser, after the price was locked" : "By the operator: a limit order", x.block, x.hash, undefined] as [string, string, number, string, ReactNode?]),
-    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fills` : "Did not settle", r.settle?.block, r.settle?.hash, r.settle ? <StepQc i={4} /> : undefined],
+    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fill${(r.fills?.length ?? 0) === 1 ? "" : "s"}` : "Did not settle", r.settle?.block, r.settle?.hash, r.settle ? <StepQc i={4} /> : undefined],
   ] : [
     ["Batch opened", "Its key's fingerprint fixed on chain", r.create?.block, r.create?.hash, <Qc name="QoreChain EVM">BlindSettlement fixes the batch key's fingerprint</Qc>],
     ...posts.map((p, i) => [`Sealed order ${i + 1}`, p.bytes ? `${p.bytes.toLocaleString("en-US")} bytes, unreadable` : "Posted, unreadable", p.block, p.hash, i === 0 ? <StepQc i={0} /> : undefined] as [string, string, number, string, ReactNode?]),
     ["Price locked", "The market maker's signed curve", r.commit?.block, r.commit?.hash, viaLinkedKey(r.commit?.hash) ? <StepQc i={2} href="/proof#agent" link="the rule" /> : <Qc name={COMMIT_PLAIN.name}>{COMMIT_PLAIN.rest}</Qc>],
     ["Blinds open", "Every order can now be opened from chain data", r.open?.block, r.open?.hash, <Qc name="QoreChain EVM">BlindSettlement checks the revealed key against its fingerprint</Qc>],
-    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fills` : "Did not settle", r.settle?.block, r.settle?.hash, r.settle ? <StepQc i={4} /> : undefined],
+    ["Settled", r.settle ? `One price, ${r.fills?.length ?? 0} fill${(r.fills?.length ?? 0) === 1 ? "" : "s"}` : "Did not settle", r.settle?.block, r.settle?.hash, r.settle ? <StepQc i={4} /> : undefined],
   ];
   return (
     <div className="page wrap">

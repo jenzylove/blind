@@ -73,6 +73,28 @@ You trust the operator for the rest:
 - Limit orders wait across batches while you are offline, so we hold their key and reveal them.
 - These are testnet tokens with no value.
 
+## Try to rob it
+
+https://blind.jdollar.site/attack has eight buttons. Each one sends a real transaction on QoreChain testnet from our attacker account, or signed with the market maker agent's real linked key, and shows who stopped it:
+
+| Attack | Stopped by |
+|---|---|
+| Use the agent's key to send fUSD, withdraw, or settle | QoreChain's spending rule on the key (`abstractaccount_execution_failed`) |
+| Lock a fake price from another account | the contract: `NotMaker` |
+| Rewrite the owner's mandate, or pull inventory, with our own ML-DSA-87 key | `pqcVerify` (`0x0A01`): `BadSignature` |
+| Settle a batch as someone else | the contract: `NotSettler` |
+| Open a fingerprint with a made up order | the contract: `BadReveal` or `BadPhase` |
+
+Every attempt is logged publicly with its transaction at `/api/attacks`.
+
+## Check it yourself, no keys
+
+```sh
+npm install && npm run verify
+```
+
+`npm run verify` reads only the public chain and the public site. It checks the deployed bytecode and its settings, the owner's mandate, the agent key's spending rule (commit only, at most 1 uqor), that the owner, agent and maker keys are registered ML-DSA-87 keys, replays every v4 batch from its events (each fill belongs to a revealed order, each reveal came after the commit), and confirms every logged attack failed on chain. CI runs it daily with the contract tests and a 5,000 run fuzz ([.github/workflows/verify.yml](.github/workflows/verify.yml)).
+
 ## Accounts
 
 | Role | Address |

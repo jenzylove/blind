@@ -24,6 +24,8 @@ jobs:
 
       - name: Contract tests
         run: forge test
+        env:
+          FOUNDRY_FUZZ_RUNS: "5000"
 
       - uses: actions/setup-node@v4
         with:
