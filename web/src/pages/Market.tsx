@@ -223,8 +223,8 @@ export function OrderBook({ s, cur, lastBatch, mine }: {
   const id = s?.batch.id;
   const rows = useMemo(() => {
     if (!active) return [];
-    const out = (cur && cur.id === id ? cur.posts : []).map((p) => ({ hash: p.hash, bytes: p.bytes, at: p.at, mine: mine.some((m) => m.postHash === p.hash), chain: true }));
-    for (const m of mine) if (m.batch === id && !out.some((o) => o.hash === m.postHash)) out.push({ hash: m.postHash, bytes: m.bytes, at: m.at, mine: true, chain: false });
+    const out = (cur && cur.id === id ? cur.posts : []).map((p) => ({ hash: p.hash, bytes: p.bytes, fp: (p as any).fingerprint as string | undefined, at: p.at, mine: mine.some((m) => m.postHash === p.hash), chain: true }));
+    for (const m of mine) if (m.batch === id && !out.some((o) => o.hash === m.postHash)) out.push({ hash: m.postHash, bytes: m.bytes, fp: undefined, at: m.at, mine: true, chain: false });
     return out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
   }, [cur, mine, active, id]);
   const commit = active && cur && cur.id === id ? cur.commit : null;
@@ -233,18 +233,18 @@ export function OrderBook({ s, cur, lastBatch, mine }: {
   return (
     <section className="pn-book" aria-label="Order book">
       <div className="pnh"><h2>Order book</h2><span className="pnn">{rows.length ? `${rows.length} sealed` : ""}</span></div>
-      <div className="bk-cols"><span>Order</span><span>Size, bytes</span><span>Posted</span></div>
+      <div className="bk-cols"><span>Order</span><span>On chain</span><span>Posted</span></div>
       <div className={`bk-sealed ${opening ? "opening" : ""}`}>
         {rows.map((r) => (
           <div className="bk-row" key={r.hash}>
             <span className={`bk-o ${r.mine ? "mine" : ""}`}><Slats /><b>{r.mine ? "Yours, sealed" : "Sealed"}</b></span>
-            <span className="mono">{r.bytes ? r.bytes.toLocaleString("en-US") : "…"}</span>
+            <span className="mono">{r.fp ? `${r.fp.slice(0, 8)}…` : r.bytes ? `${r.bytes.toLocaleString("en-US")} bytes` : "…"}</span>
             <span className="mono dim">{r.at ? since(r.at, now + (r.mine && !r.chain ? 0 : clockSkew())) : "…"}</span>
           </div>
         ))}
-        {!rows.length && <p className="bk-empty">{active ? "Reading this batch's sealed orders." : "No sealed orders waiting. Yours starts the next batch."}</p>}
+        {!rows.length && <p className="bk-empty">{active ? "Reading this batch's sealed orders." : "No orders waiting. Yours starts the next batch."}</p>}
       </div>
-      <p className="bk-cap">{rows.length ? "Sealed until the price is locked. No side, no amount, for anyone." : "Orders show here as sealed rows: size in bytes and time, nothing else."}</p>
+      <p className="bk-cap">{rows.length ? "Only fingerprints until the price is locked. No side, no amount, for anyone." : "Orders show here as fingerprints: 32 bytes and a time, nothing else."}</p>
       <Qc name="BlindSettlement">each swap is a 32 byte fingerprint on QoreChain EVM until the price is locked; its owner reveals it after</Qc>
 
       <div className="bk-mid">
