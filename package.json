@@ -7,6 +7,7 @@
   "scripts": {
     "drill": "tsx scripts/drill.ts",
     "server": "tsx server/index.ts",
+    "verify": "tsx scripts/verify.ts",
     "test": "tsx --test test/*.test.ts && forge test",
     "build:web": "npm --prefix web run build"
   },

@@ -217,6 +217,7 @@ function Nav({ path }: { path: string }) {
         <div className="links">
           <Link to="/#how" className="l hideS">How it works</Link>
           <Link to="/proof" className={`l ${path.startsWith("/proof") || path.startsWith("/batch") ? "on" : ""}`}>Proof</Link>
+          <Link to="/attack" className={`l ${path.startsWith("/attack") ? "on" : ""}`}>Try to rob it</Link>
           <a href={REPO} target="_blank" rel="noreferrer" className="l hideS">GitHub</a>
         </div>
         <div className="right">

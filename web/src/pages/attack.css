@@ -1,0 +1,39 @@
+/* Try to rob Blind: hairline rows, one per attack. Refused reads in the safe colour, a hit in the warning colour. */
+.rob .figs b.neg { color: var(--down); }
+.robs { list-style: none; margin: 8px 0 64px; padding: 0; border-top: 1px solid var(--line); }
+.robr { display: grid; grid-template-columns: 56px minmax(0, 1fr) 150px; grid-template-areas: "n what act" ". res res"; gap: 6px 24px; padding: 28px 0; border-bottom: 1px solid var(--line); transition: background .3s; }
+.robr.run { background: linear-gradient(90deg, transparent, rgba(255,231,163,.05), transparent); }
+.robr .n { grid-area: n; font-family: var(--mono); font-size: 13px; color: var(--fg3); padding-top: 6px; }
+.robr .what { grid-area: what; }
+.robr h3 { font-size: 24px; letter-spacing: -.015em; line-height: 1.2; }
+.robr .what p { margin: 6px 0 0; color: var(--fg2); max-width: 40em; }
+.robr .act { grid-area: act; display: flex; justify-content: flex-end; align-items: flex-start; }
+.robr .act .btn { padding: 12px 22px; font-size: 15px; min-width: 120px; }
+.robr .res { grid-area: res; max-width: 760px; }
+.robr .res:empty { display: none; }
+.robr .wait { margin: 14px 0 0; color: var(--fg2); font-size: 14px; }
+.robr .wait::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 10px; vertical-align: 1px; animation: robpulse 1s ease-in-out infinite; }
+@keyframes robpulse { 50% { opacity: .25; } }
+.robr .out { margin-top: 16px; padding-left: 16px; border-left: 2px solid var(--up); animation: robin .35s ease-out; }
+.robr .out.hit { border-color: var(--down); }
+@keyframes robin { from { opacity: 0; transform: translateY(4px); } }
+.robr .by { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.robr .by b { font-weight: 700; color: var(--up); }
+.robr .out.hit .by b { color: var(--down); }
+.robr .by .when { font-family: var(--mono); font-size: 12px; color: var(--fg3); }
+.robr .out p { margin: 6px 0 0; color: var(--fg); font-size: 15px; line-height: 1.5; }
+.robr .ev { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px; margin-top: 10px; }
+.robr details { font-size: 13px; color: var(--fg3); }
+.robr summary { cursor: pointer; list-style: none; border-bottom: 1px solid var(--line2); display: inline; }
+.robr summary::-webkit-details-marker { display: none; }
+.robr details code { display: block; margin-top: 8px; font-family: var(--mono); font-size: 12px; color: var(--fg2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.robfoot { margin-top: 8px; max-width: 46em; }
+.robfoot a { border-bottom: 1px solid var(--fg3); }
+@media (max-width: 720px) {
+  .robr { grid-template-columns: 1fr; grid-template-areas: "n" "what" "act" "res"; padding: 22px 0; }
+  .robr .n { padding-top: 0; }
+  .robr h3 { font-size: 21px; }
+  .robr .act { justify-content: flex-start; margin-top: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { .robr .wait::before, .robr .out { animation: none; } }
+.robr .txl { white-space: normal; }

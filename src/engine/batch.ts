@@ -49,6 +49,15 @@ export const agentLinkFrom = (hexSeed?: string): AgentLink | undefined => {
   return { sk, pk: ed25519.getPublicKey(sk) };
 };
 
+/** One use of the agent's linked key at a time in this process: each call spends the key's nonce, so the
+ *  attack lab (server/attacks.ts) and the engine's commits take turns. */
+let agentKeyQueue: Promise<unknown> = Promise.resolve();
+export function withAgentKey<T>(f: () => Promise<T>): Promise<T> {
+  const p = agentKeyQueue.then(f, f);
+  agentKeyQueue = p.catch(() => undefined);
+  return p;
+}
+
 export class Engine {
   /** The maker account: the only one BlindSettlement v4 accepts commits from. It holds nothing; the agent's
    *  linked key acts for it, limited on chain to that one call. */
@@ -70,7 +79,10 @@ export class Engine {
 
   /** The agent's call, made with its linked key under the account's on-chain spending rule
    *  (only BlindSettlement's batch functions). The settler only relays and pays the fee. */
-  private async agentTx(functionName: string, data: Hex, gasLimit: number) {
+  private agentTx(functionName: string, data: Hex, gasLimit: number) {
+    return withAgentKey(() => this.agentTxNow(functionName, data, gasLimit));
+  }
+  private async agentTxNow(functionName: string, data: Hex, gasLimit: number) {
     const link = this.link!;
     const account = this.maker?.cosmos ?? this.settler.cosmos;
     const { nonce } = await fetchAuthNonce({ rest: NET.rest, address: account, pubkey: link.pk });

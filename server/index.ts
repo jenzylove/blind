@@ -17,6 +17,7 @@ import { BatchLoop, REVEAL_BLOCKS } from "./loop.ts";
 import { relayCheck } from "./relay.ts";
 import { SandwichBot } from "./bot.ts";
 import { MarketSampler, seedFrom, batchDots, priceOf } from "./market.ts";
+import { mountAttacks } from "./attacks.ts";
 
 const [op, agent, hedger] = await Promise.all([account("OPERATOR"), account("AGENT"), account("HEDGER")]);
 const dep = state.read();
@@ -140,6 +141,9 @@ app.get("/api/bot/attempt/:hash", (c) => {
   return a ? c.json(a) : bad(c, "the bot has not seen this transaction (yet)", 404);
 });
 
+// ------------------------------------------------------------------ "Try to rob Blind": real attacks, refused on chain
+mountAttacks(app, ip);
+
 /** Explorer links: the explorer indexes Cosmos hashes, so resolve an EVM hash first, then redirect. */
 const cosmosOf = new Map<string, string>();
 app.get("/api/explorer/tx/:hash", async (c) => {
@@ -157,13 +161,16 @@ app.get("/api/explorer/tx/:hash", async (c) => {
 });
 
 /** The agent's linked key and the spending rule the chain enforces on it, read live from the chain. */
+import BLIND_ABI from "../web/src/abi.json" with { type: "json" };
 let agentCache: { at: number; v: any } | null = null;
 app.get("/api/agent", async (c) => {
   if (agentCache && Date.now() - agentCache.at < 60_000) return c.json(agentCache.v);
-  const [rules, keys] = await Promise.all([fetchSpendingRules({ rest: NET.rest, address: op.cosmos }), fetchAuthenticators({ rest: NET.rest, address: op.cosmos })]);
+  const holder: string = (dep as any).makerCosmos ?? op.cosmos; // v4: the key lives on the market maker account
+  const [rules, keys] = await Promise.all([fetchSpendingRules({ rest: NET.rest, address: holder }), fetchAuthenticators({ rest: NET.rest, address: holder })]);
+  const mandate = await pub.readContract({ address: settlement, abi: BLIND_ABI as any, functionName: "mandate" }).catch(() => null);
   const pk = agentLink ? toHex(agentLink.pk).slice(2).toLowerCase() : null;
   const key = (keys as any[]).find((k) => String(k.pubkeyHex).toLowerCase() === pk) ?? null;
-  const v = JSON.parse(JSON.stringify({ account: op.cosmos, settlement, linked: !!key && !key.revoked, key, rules }, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
+  const v = JSON.parse(JSON.stringify({ account: holder, settlement, linked: !!key && !key.revoked, key, rules, mandate }, (_k, x) => (typeof x === "bigint" ? x.toString() : x)));
   agentCache = { at: Date.now(), v };
   return c.json(v);
 });
