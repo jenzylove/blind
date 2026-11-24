@@ -57,6 +57,20 @@ contract EvilToken is Token {
     }
 }
 
+/// A token that says "no" without reverting: transfer returns false and moves nothing.
+contract FalseToken is Token {
+    constructor() Token("false") {}
+    function transfer(address, uint256) external pure override returns (bool) { return false; }
+}
+
+/// A token whose transfer returns something that is not a bool.
+contract GarbageToken is Token {
+    constructor() Token("garbage") {}
+    function transfer(address, uint256) external pure override returns (bool) {
+        assembly { mstore(0, 2) mstore(32, 3) return(0, 64) }
+    }
+}
+
 contract BlindSettlementTest is Test {
     address constant VERIFY = address(0x0A01);
     address constant STATUS = address(0x0A02);
@@ -820,5 +834,38 @@ contract BlindSettlementTest is Test {
         vm.prank(settler);
         vm.expectRevert(BlindSettlement.TooBig.selector);
         s.settle(id, new uint256[](n), new BlindSettlement.Order[](n), new bytes[](n));
+    }
+
+    /// A transfer that returns false, or returns something that is not a bool, reverts the whole call
+    /// (QCAI v5 finding: return values from external calls).
+    function test_v5_falseOrGarbageTransferReturnReverts() public {
+        Token[2] memory bad = [Token(new FalseToken()), Token(new GarbageToken())];
+        for (uint256 i; i < 2; ++i) {
+            BlindSettlement c = _deploy(IERC20(address(bad[i])), IERC20(address(fUSD)));
+            _setMandate(c, _mandate());
+            bad[i].mint(address(c), 1e18);
+            bytes memory sig = _sign(owner, c.withdrawMessage(address(bad[i]), 0.1e18, 0));
+            vm.expectRevert();
+            c.withdraw(address(bad[i]), 0.1e18, sig);
+            assertEq(bad[i].balanceOf(address(c)), 1e18);
+        }
+    }
+
+    /// setMandate is open to any sender on purpose (the owner's key is a post quantum key, not an EVM account),
+    /// so the owner's ML-DSA-87 signature over a fresh nonce is the access control. A stranger's own
+    /// signature, and a replay of the owner's, are both refused (QCAI v5 finding: access control on setMandate).
+    function test_v5_setMandateNeedsTheOwnersFreshSignature() public {
+        BlindSettlement.Mandate memory m = _mandate();
+        m.maxNet = 100e18;
+        uint256 n = s.mandateNonce();
+        bytes memory strangerSig = _sign(mallory, s.mandateMessage(m, n));
+        bytes memory ownerSig = _sign(owner, s.mandateMessage(m, n));
+        vm.prank(mallory);
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.setMandate(m, strangerSig);
+        vm.prank(mallory);
+        s.setMandate(m, ownerSig); // relayed by anyone, but only what the owner signed
+        vm.expectRevert(BlindSettlement.BadSignature.selector);
+        s.setMandate(m, ownerSig); // the nonce moved on
     }
 }

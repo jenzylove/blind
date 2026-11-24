@@ -2,7 +2,7 @@
 
 QoreChain's own AI auditor (QCAI, dashboard.qorechain.io/audit) reviewed `contracts/BlindSettlement.sol` on 22 Nov 2026. That is the source deployed at [`0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf`](https://explore.qore.network/address/0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf) on testnet.
 
-**Result:** security score 72, risk level high, 6 findings. The full report is in [`qcai-report-2026-11-22.pdf`](qcai-report-2026-11-22.pdf).
+**Result:** security score 72, risk level high, 6 findings, listed below as QCAI gave them (the PDF of this first run was not kept). Later runs, and what changed after them, are in [../AUDIT.md](../AUDIT.md).
 
 We checked every finding against the code, and each answer below points at a test that proves it. Run them with `forge test --match-test qcai`. The whole suite is `forge test` (31 tests).
 

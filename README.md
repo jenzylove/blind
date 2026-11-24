@@ -11,7 +11,7 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum dApp).
 | Settlement contract (v5) | [`0x143e9152c9a1b97668d6fbd23126e1616275aac7`](https://explore.qore.network/address/0x143e9152c9a1b97668d6fbd23126e1616275aac7) on `qorechain-diana` (on the explorer, switch to Testnet at the top right) |
 | Every batch, misses included | https://blind.jdollar.site/proof |
 | The market maker's spending rule and the owner's mandate, read live | https://blind.jdollar.site/proof and `/api/agent` |
-| QCAI audit and our answer to each finding | [docs/audit/QCAI.md](docs/audit/QCAI.md) |
+| Security audits: QCAI scores 78 on the live contract (72 before the v5 fixes); every finding mapped to code and a test | [docs/AUDIT.md](docs/AUDIT.md) |
 | Spikes, build log, AI usage | [docs/spikes](docs/spikes), [docs/BUILD_LOG.md](docs/BUILD_LOG.md), [AI_USAGE.md](AI_USAGE.md) |
 
 ## How a batch works
