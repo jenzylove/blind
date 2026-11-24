@@ -157,6 +157,18 @@ contract BlindSettlementTest is Test {
 
     function _salt(uint64 id, uint256 i) internal pure returns (bytes32) { return keccak256(abi.encode("salt", id, i)); }
 
+    /// v5: only the settler (the relayer) posts fingerprints.
+    function _post(uint64 id, bytes32 fp) internal {
+        vm.prank(settler);
+        s.post(id, fp);
+    }
+
+    /// v5: the settler relays reveals (the order's own user may also reveal directly).
+    function _reveal(uint64 id, uint256 index, BlindSettlement.Order memory o, bytes memory sig, bytes32 salt) internal {
+        vm.prank(settler);
+        s.reveal(id, index, o, sig, salt);
+    }
+
     function _one(BlindSettlement.Order memory o) internal pure returns (BlindSettlement.Order[] memory a) {
         a = new BlindSettlement.Order[](1); a[0] = o;
     }
@@ -169,11 +181,11 @@ contract BlindSettlementTest is Test {
         for (uint256 i; i < os.length; ++i) {
             (,,,, uint32 posted,,,,,,,) = s.batches(id);
             idx[i] = posted;
-            s.post(id, s.fingerprintOf(os[i], sigs[i], _salt(id, i)));
+            _post(id, s.fingerprintOf(os[i], sigs[i], _salt(id, i)));
         }
         _commitCurve(id, c);
         vm.roll(block.number + 1);
-        for (uint256 i; i < os.length; ++i) s.reveal(id, idx[i], os[i], sigs[i], _salt(id, i));
+        for (uint256 i; i < os.length; ++i) _reveal(id, idx[i], os[i], sigs[i], _salt(id, i));
     }
 
     function _settle(uint64 id, BlindSettlement.Order[] memory os, BlindSettlement.Curve memory c) internal {
@@ -291,7 +303,7 @@ contract BlindSettlementTest is Test {
 
     function _postOne(uint64 id, BlindSettlement.Order memory o) internal returns (bytes memory sig) {
         sig = _sigOf(o);
-        s.post(id, s.fingerprintOf(o, sig, _salt(id, 0)));
+        _post(id, s.fingerprintOf(o, sig, _salt(id, 0)));
     }
 
     /// On chain before the commit there is only a 32 byte fingerprint: no side, no amount, no key to steal.
@@ -309,7 +321,7 @@ contract BlindSettlementTest is Test {
         bytes memory sig = _postOne(id, o);
         vm.roll(block.number + 5);
         vm.expectRevert(BlindSettlement.BadPhase.selector);
-        s.reveal(id, 0, o, sig, _salt(id, 0));
+        _reveal(id, 0, o, sig, _salt(id, 0));
     }
 
     function test_v4_cannotRevealInTheCommitBlock() public {
@@ -318,7 +330,7 @@ contract BlindSettlementTest is Test {
         bytes memory sig = _postOne(id, o);
         _commitCurve(id, _flat(1e18));
         vm.expectRevert(BlindSettlement.BadPhase.selector);
-        s.reveal(id, 0, o, sig, _salt(id, 0));
+        _reveal(id, 0, o, sig, _salt(id, 0));
     }
 
     function test_v4_revealMustMatchTheFingerprint() public {
@@ -328,10 +340,10 @@ contract BlindSettlementTest is Test {
         _commitCurve(id, _flat(1e18));
         vm.roll(block.number + 1);
         vm.expectRevert(BlindSettlement.BadReveal.selector);
-        s.reveal(id, 0, o, sig, keccak256("a guessed salt"));
+        _reveal(id, 0, o, sig, keccak256("a guessed salt"));
         o.amountIn = 9_000e6; // a different order behind the same fingerprint
         vm.expectRevert(BlindSettlement.BadReveal.selector);
-        s.reveal(id, 0, o, sig, _salt(id, 0));
+        _reveal(id, 0, o, sig, _salt(id, 0));
     }
 
     function test_v4_revealOnlyOnce() public {
@@ -340,9 +352,9 @@ contract BlindSettlementTest is Test {
         bytes memory sig = _postOne(id, o);
         _commitCurve(id, _flat(1e18));
         vm.roll(block.number + 1);
-        s.reveal(id, 0, o, sig, _salt(id, 0));
+        _reveal(id, 0, o, sig, _salt(id, 0));
         vm.expectRevert(BlindSettlement.BadReveal.selector);
-        s.reveal(id, 0, o, sig, _salt(id, 0));
+        _reveal(id, 0, o, sig, _salt(id, 0));
     }
 
     function test_v4_revealWindowCloses() public {
@@ -352,7 +364,7 @@ contract BlindSettlementTest is Test {
         _commitCurve(id, _flat(1e18));
         vm.roll(block.number + REVEAL + 1);
         vm.expectRevert(BlindSettlement.BadPhase.selector);
-        s.reveal(id, 0, o, sig, _salt(id, 0));
+        _reveal(id, 0, o, sig, _salt(id, 0));
     }
 
     /// The settler cannot cut the reveal window short to leave someone out.
@@ -362,11 +374,11 @@ contract BlindSettlementTest is Test {
         BlindSettlement.Order memory b = _order(bob, id, true, 100e6, 0);
         bytes memory sa = _sigOf(a);
         bytes memory sb = _sigOf(b);
-        s.post(id, s.fingerprintOf(a, sa, _salt(id, 0)));
-        s.post(id, s.fingerprintOf(b, sb, _salt(id, 1)));
+        _post(id, s.fingerprintOf(a, sa, _salt(id, 0)));
+        _post(id, s.fingerprintOf(b, sb, _salt(id, 1)));
         _commitCurve(id, _flat(1e18));
         vm.roll(block.number + 1);
-        s.reveal(id, 0, a, sa, _salt(id, 0)); // bob has not revealed yet
+        _reveal(id, 0, a, sa, _salt(id, 0)); // bob has not revealed yet
         uint256[] memory idx = new uint256[](1);
         bytes[] memory sigs = new bytes[](1);
         sigs[0] = sa;
@@ -397,7 +409,7 @@ contract BlindSettlementTest is Test {
         uint64 id = _batch();
         _commitCurve(id, _flat(1e18));
         vm.expectRevert(BlindSettlement.BadPhase.selector);
-        s.post(id, keccak256("late"));
+        _post(id, keccak256("late"));
     }
 
     function test_quoteCannotBeCommittedTwice() public {
@@ -672,13 +684,16 @@ contract BlindSettlementTest is Test {
         uint64 id = s2.open();
         BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
         bytes memory sig = _sign(alice, s2.signedOrderBytes(o));
-        s2.post(id, s2.fingerprintOf(o, sig, bytes32(uint256(1))));
+        bytes32 fp = s2.fingerprintOf(o, sig, bytes32(uint256(1)));
+        vm.prank(settler);
+        s2.post(id, fp);
         BlindSettlement.Curve memory c = _flat(1e18);
         uint64 exp = uint64(block.number + 50);
         bytes memory qsig = _sign(agent, s2.quoteMessage(id, c, exp));
         vm.prank(maker);
         s2.commit(id, c, exp, qsig);
         vm.roll(block.number + 1);
+        vm.prank(alice);
         s2.reveal(id, 0, o, sig, bytes32(uint256(1)));
         uint256[] memory idx = new uint256[](1);
         bytes[] memory sigs = new bytes[](1);
@@ -720,9 +735,9 @@ contract BlindSettlementTest is Test {
 
     function test_v4_postsAreBounded() public {
         uint64 id = _batch();
-        for (uint256 i; i < 64; ++i) s.post(id, keccak256(abi.encode(i)));
+        for (uint256 i; i < 64; ++i) _post(id, keccak256(abi.encode(i)));
         vm.expectRevert(BlindSettlement.TooBig.selector);
-        s.post(id, keccak256("one too many"));
+        _post(id, keccak256("one too many"));
     }
 
     // ------------------------------------------------------------ v3: wallet signing domain and token checks
@@ -745,5 +760,65 @@ contract BlindSettlementTest is Test {
     function test_v3_tokensMustBeContracts() public {
         vm.expectRevert(BlindSettlement.BadToken.selector);
         _deploy(IERC20(makeAddr("not a token")), IERC20(address(fUSD)));
+    }
+
+    // ------------------------------------------------------------ v5: QCAI v4 findings, closed with tests
+
+    /// Nobody but the settler can post: a batch cannot be flooded with junk fingerprints from outside.
+    function test_v5_onlyTheSettlerPosts() public {
+        uint64 id = _batch();
+        vm.prank(mallory);
+        vm.expectRevert(BlindSettlement.NotSettler.selector);
+        s.post(id, keccak256("junk"));
+        vm.prank(maker);
+        vm.expectRevert(BlindSettlement.NotSettler.selector);
+        s.post(id, keccak256("junk"));
+    }
+
+    /// A reveal comes from the order's own user or the settler relaying it, nobody else.
+    function test_v5_revealOnlyByItsUserOrTheSettler() public {
+        uint64 id = _batch();
+        BlindSettlement.Order memory o = _order(alice, id, true, 100e6, 0);
+        bytes memory sig = _sigOf(o);
+        _post(id, s.fingerprintOf(o, sig, _salt(id, 0)));
+        _commitCurve(id, _flat(1e18));
+        vm.roll(block.number + 1);
+        vm.prank(mallory);
+        vm.expectRevert(BlindSettlement.NotRevealer.selector);
+        s.reveal(id, 0, o, sig, _salt(id, 0));
+        vm.prank(alice);
+        s.reveal(id, 0, o, sig, _salt(id, 0));
+        assertTrue(s.revealedAs(id, 0) != bytes32(0));
+    }
+
+    /// Only the maker account may commit, and every other role is refused (QCAI: access control on commit).
+    function test_v5_commitRefusesEveryOtherRole() public {
+        uint64 id = _batch();
+        BlindSettlement.Curve memory c = _flat(1e18);
+        uint64 exp = uint64(block.number + 100);
+        bytes memory sig = _sign(agent, s.quoteMessage(id, c, exp));
+        address[5] memory others = [settler, agent, owner, alice, mallory];
+        for (uint256 i; i < others.length; ++i) {
+            vm.prank(others[i]);
+            vm.expectRevert(BlindSettlement.NotMaker.selector);
+            s.commit(id, c, exp, sig);
+        }
+    }
+
+    /// Past int256 the price math reverts instead of wrapping to a wrong price (QCAI: overflow in _solve).
+    function test_v5_solveRevertsInsteadOfWrapping() public {
+        uint128 top = type(uint128).max;
+        BlindSettlement.Curve memory c = BlindSettlement.Curve(top - 3, top - 2, top - 4, top, top);
+        vm.expectRevert(BlindSettlement.TooBig.selector);
+        s.clearingPrice(c, uint256(1) << 120, 0);
+    }
+
+    /// More than MAX_ORDERS orders are refused before any work is done (QCAI: unbounded loop in settle).
+    function test_v5_settleRefusesMoreThan32OrdersFirst() public {
+        uint64 id = _batch();
+        uint256 n = s.MAX_ORDERS() + 1;
+        vm.prank(settler);
+        vm.expectRevert(BlindSettlement.TooBig.selector);
+        s.settle(id, new uint256[](n), new BlindSettlement.Order[](n), new bytes[](n));
     }
 }

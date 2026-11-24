@@ -8,7 +8,7 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum dApp).
 
 | | |
 |---|---|
-| Settlement contract (v4) | [`0x036701960d6e42e6d167222a917405ba3315a79b`](https://explore.qore.network/address/0x036701960d6e42e6d167222a917405ba3315a79b) on `qorechain-diana` (on the explorer, switch to Testnet at the top right) |
+| Settlement contract (v5) | [`0x143e9152c9a1b97668d6fbd23126e1616275aac7`](https://explore.qore.network/address/0x143e9152c9a1b97668d6fbd23126e1616275aac7) on `qorechain-diana` (on the explorer, switch to Testnet at the top right) |
 | Every batch, misses included | https://blind.jdollar.site/proof |
 | The market maker's spending rule and the owner's mandate, read live | https://blind.jdollar.site/proof and `/api/agent` |
 | QCAI audit and our answer to each finding | [docs/audit/QCAI.md](docs/audit/QCAI.md) |
@@ -17,9 +17,9 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum dApp).
 ## How a batch works
 
 1. **Sign.** Your browser signs the order with your ML-DSA-87 key (registered on QoreChain), under QoreChain's message domain (`qorechain-msg-v1|qorechain-diana|`), the same bytes a QoreX wallet signs.
-2. **Post a fingerprint.** Only `keccak256(order, keccak256(signature), salt)` goes on chain: 32 bytes, with a random salt that never leaves your browser. Anyone can see that an order exists, but not its side, size or limit, and no key anywhere opens it. Not ours, not the market maker's.
+2. **Post a fingerprint.** Only `keccak256(order, keccak256(signature), salt)` goes on chain, posted by the relayer (the contract accepts posts from nobody else, so a batch cannot be flooded with junk): 32 bytes, with a random salt that never leaves your browser. Anyone can see that an order exists, but not its side, size or limit, and no key anywhere opens it. Not ours, not the market maker's.
 3. **Commit.** The market maker agent prices from public data only: the x/amm pool, its inventory and outside volatility. It signs a quote curve with its ML-DSA-87 key and commits it on chain through its own leashed account (below). The contract refuses a curve outside the owner's mandate. This closes intake.
-4. **Reveal.** From the next block, your browser hands over the order, salt and signature. The contract recomputes the fingerprint and rejects anything that does not match. The browser watches the contract, not our server, and after a reload it picks up any reveal it still owes. The window is 20 blocks.
+4. **Reveal.** From the next block, your browser hands over the order, salt and signature (only the order's own user or the relayer may reveal it). The contract recomputes the fingerprint and rejects anything that does not match. The browser watches the contract, not our server, and after a reload it picks up any reveal it still owes. The window is 20 blocks.
 5. **Settle.** Once every order is revealed, or the window is over, one transaction:
    - checks every user's post quantum signature with `pqcVerify` (`0x0A01`) against the key `pqcKeyStatus` (`0x0A02`) reports,
    - computes one clearing price from the committed curve (the operator supplies no price),
@@ -36,7 +36,7 @@ When buyers and sellers meet in a batch, they trade with each other at one price
 The market maker is an agent with real inventory. Two independent locks hold it.
 
 **The chain's spending rule.** The agent signs with its own ed25519 key, linked to the market maker account (`qor1phev…7pe`). QoreChain enforces:
-- **Allowed calls:** only `commit` on BlindSettlement (`allowed_evm_calls` = `0x0367…a79b/0x6225710f`).
+- **Allowed calls:** only `commit` on BlindSettlement (`allowed_evm_calls` = `0x143e…aac7/0x6225710f`).
 - **Value:** at most 1 uqor per transaction and 1 uqor a day.
 - **Expiry:** the key expires after 29 days.
 
@@ -75,7 +75,7 @@ You trust the operator for the rest:
 
 ## Try to rob it
 
-https://blind.jdollar.site/attack has eight buttons. Each one sends a real transaction on QoreChain testnet from our attacker account, or signed with the market maker agent's real linked key, and shows who stopped it:
+https://blind.jdollar.site/attack has nine buttons. Each one sends a real transaction on QoreChain testnet from our attacker account, or signed with the market maker agent's real linked key, and shows who stopped it:
 
 | Attack | Stopped by |
 |---|---|
@@ -84,6 +84,7 @@ https://blind.jdollar.site/attack has eight buttons. Each one sends a real trans
 | Rewrite the owner's mandate, or pull inventory, with our own ML-DSA-87 key | `pqcVerify` (`0x0A01`): `BadSignature` |
 | Settle a batch as someone else | the contract: `NotSettler` |
 | Open a fingerprint with a made up order | the contract: `BadReveal` or `BadPhase` |
+| Flood a batch with junk fingerprints | the contract: `NotSettler` |
 
 Every attempt is logged publicly with its transaction at `/api/attacks`.
 
@@ -93,7 +94,7 @@ Every attempt is logged publicly with its transaction at `/api/attacks`.
 npm install && npm run verify
 ```
 
-`npm run verify` reads only the public chain and the public site. It checks the deployed bytecode and its settings, the owner's mandate, the agent key's spending rule (commit only, at most 1 uqor), that the owner, agent and maker keys are registered ML-DSA-87 keys, replays every v4 batch from its events (each fill belongs to a revealed order, each reveal came after the commit), and confirms every logged attack failed on chain. CI runs it daily with the contract tests and a 5,000 run fuzz ([.github/workflows/verify.yml](.github/workflows/verify.yml)).
+`npm run verify` reads only the public chain and the public site. It checks the deployed bytecode and its settings, the owner's mandate, the agent key's spending rule (commit only, at most 1 uqor), that the owner, agent and maker keys are registered ML-DSA-87 keys, replays every batch on the current contract from its events (each fill belongs to a revealed order, each reveal came after the commit), and confirms every logged attack failed on chain. CI runs it daily with the contract tests and a 5,000 run fuzz ([.github/workflows/verify.yml](.github/workflows/verify.yml)).
 
 ## Accounts
 
@@ -105,7 +106,7 @@ npm install && npm run verify
 | Agent's linked ed25519 key on the maker account | `0xd6c12f40051980dcc8f1c0c2fe110c29a6a67c88c66c209ca99be3d3f9fe938c` |
 | Owner: ML-DSA-87 mandate and withdrawals (`OWNER`) | `qor1nl3u6uq7rhnd3ddhrhu0v0hg8ktx8xnpmqy67q` (`0x9fE3Cd701e1dE6d8B5b71DF8F63eE83D96639a61`) |
 | Hedger and treasury (`HEDGER`) | `qor1j4mrfz0l2mf6cmduxngm70rjejm5slj2xvrvkd` (`0x95763489fF56D3ac6dBc34d1BF3c72ccb7487E4A`) |
-| Previous contracts | v3 (operator held a batch key) `0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e`; v2 (orders signed without QoreChain's message domain) `0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf`; v1 (flat band, the first miss) `0x4906cbdec09a89bd71aeccaf6e0b450c5a9cecc1` |
+| Previous contracts | v4 (anyone could post a fingerprint; same design otherwise) `0x036701960d6e42e6d167222a917405ba3315a79b`; v3 (operator held a batch key) `0xb9a36d4d4fd341b0432bbbfa99a23fcc555a836e`; v2 (orders signed without QoreChain's message domain) `0xbdbd8fa8247a9bbc598f72cb46a2c7e3194ef3cf`; v1 (flat band, the first miss) `0x4906cbdec09a89bd71aeccaf6e0b450c5a9cecc1` |
 
 ## Run it
 
@@ -114,12 +115,12 @@ You need Node 22+ and Foundry.
 ```sh
 git clone --recurse-submodules https://github.com/jenzylove/blind && cd blind
 npm install && npm --prefix web install
-forge test                                  # 49 contract tests, fuzzed
+forge test                                  # 54 contract tests, fuzzed
 npx tsx --test test/*.test.ts               # 11 agent policy tests
 cp .env.example .env                        # testnet keys only
 npm --prefix web run build
 npx tsx server/index.ts                     # http://localhost:8787 (only one server may hold the operator key)
-BLIND_ENV=.env npx tsx scripts/v4-setup.ts status     # the maker's linked key, its rule and the mandate
+BLIND_ENV=.env npx tsx scripts/setup.ts status        # the maker's linked key, its rule and the mandate
 ```
 
 ## Q-Day Drill

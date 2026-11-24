@@ -1,4 +1,4 @@
-// The live batch loop behind the web app (contract v4).
+// The live batch loop behind the web app (contract v5).
 // A batch exists on chain only when someone trades. Users post a fingerprint of their order
 // (keccak256(order, signature hash, salt)); the order itself stays in their browser. After
 // INTAKE_MS the market maker commits its curve from its own leashed account; strictly after the
@@ -58,6 +58,8 @@ export class BatchLoop {
     if (existsSync(v2src)) earlier.push(...JSON.parse(readFileSync(v2src, "utf8")).map((r: any) => ({ ...r, version: 2, contract: v2 })));
     const v3src = existsSync(`${DATA}/batches-v3.json`) ? `${DATA}/batches-v3.json` : "deployments/batches-v3-live.json";
     if (VERSION >= 4 && existsSync(v3src)) earlier.push(...JSON.parse(readFileSync(v3src, "utf8")).map((r: any) => ({ ...r, version: 3, contract: DEP.v3?.settlement })));
+    const v4src = existsSync(`${DATA}/batches-v4.json`) ? `${DATA}/batches-v4.json` : "deployments/batches-v4-live.json";
+    if (VERSION >= 5 && existsSync(v4src)) earlier.push(...JSON.parse(readFileSync(v4src, "utf8")).map((r: any) => ({ ...r, version: 4, contract: DEP.v4?.settlement })));
     this.earlier = earlier;
     this.standingSeed = hexToBytes(standingSeedHex as Hex);
     if (this.standingSeed.length !== 32) throw new Error("STANDING_SEED must be 32 bytes hex");

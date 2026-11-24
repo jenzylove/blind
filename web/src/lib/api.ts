@@ -117,7 +117,7 @@ export interface Attempt {
 export interface BotStats { account: string; tried: number; hits: number; avgLossBps: number | null; recent: Attempt[] }
 
 /** The contract version the app trades on now. Each version numbers its batches from 1. */
-export const CURRENT_VERSION = 4;
+export const CURRENT_VERSION = 5;
 /** Link to a batch's page, naming the contract version when it is not the current one. */
 export const batchPath = (r: { batch: number; version?: number }) =>
   `/batch/${r.batch}${r.version && r.version !== CURRENT_VERSION ? `?v=${r.version}` : ""}`;

@@ -1,6 +1,6 @@
-// Contract v4 on testnet: owner and maker accounts, deploy, the owner's mandate, inventory, and the
+// The current contract on testnet: owner and maker accounts, deploy, the owner's mandate, inventory, and the
 // agent's linked key on the maker account (commit only).
-//   BLIND_ENV=<path> npx tsx scripts/v4-setup.ts accounts | deploy | mandate | stock | link | status
+//   BLIND_ENV=<path> npx tsx scripts/setup.ts accounts | deploy | mandate | stock | link | status
 import { randomBytes } from "node:crypto";
 import { encodeFunctionData, hexToBytes, parseUnits, toFunctionSelector, toHex, type Hex } from "viem";
 import { pqcSign, linkAuthenticatorMsgs, signAuthenticatorLinkEd25519, fetchSpendingRules, fetchAuthenticators, revokeAuthenticatorMsg } from "@qorechain/sdk";
@@ -44,11 +44,12 @@ async function accounts() {
 
 async function deploy() {
   const prev = state.read() as any;
-  const { v1, v2, v3, ...cur } = prev;
-  state.write({ v1, v2, v3: v3 ?? cur });
+  const VERSION = 5;
+  const { v1, v2, v3, v4, ...cur } = prev;
+  state.write({ v1, v2, v3, v4: v4 ?? cur });
   const args = [TOKENS.fETH.address, TOKENS.fUSD.address, agent.evm, maker.evm, owner.evm, op.evm, hedger.evm, REVEAL_BLOCKS, SETTLE_BLOCKS, NET.chainId];
-  const rc = await opTx(undefined, "0x", 4_500_000n, "deploy BlindSettlement v4", args);
-  state.write({ chainId: 9800, version: 4, settlement: rc.contractAddress, deployTx: rc.transactionHash, base: "fETH", quote: "fUSD",
+  const rc = await opTx(undefined, "0x", 4_500_000n, `deploy BlindSettlement v${VERSION}`, args);
+  state.write({ chainId: 9800, version: VERSION, settlement: rc.contractAddress, deployTx: rc.transactionHash, base: "fETH", quote: "fUSD",
     agent: agent.evm, maker: maker.evm, makerCosmos: maker.cosmos, owner: owner.evm, settler: op.evm, treasury: hedger.evm,
     revealBlocks: Number(REVEAL_BLOCKS), settleWindowBlocks: Number(SETTLE_BLOCKS), msgDomain: `qorechain-msg-v1|${NET.chainId}|`,
     firstBatch: undefined, stockTx: undefined });
@@ -72,8 +73,8 @@ async function stock() {
   const { settlement } = state.read() as { settlement: Hex };
   const r = await send(op, "hybrid", [
     { typeUrl: CONVERT_COIN, value: { coin: { denom: denom("fETH"), amount: parseUnits("0.05", 18).toString() }, receiver: settlement, sender: op.cosmos } },
-    { typeUrl: CONVERT_COIN, value: { coin: { denom: denom("fUSD"), amount: parseUnits("150", 6).toString() }, receiver: settlement, sender: op.cosmos } },
-  ], "stock maker inventory: 0.05 fETH + 150 fUSD into v4", "1400000");
+    { typeUrl: CONVERT_COIN, value: { coin: { denom: denom("fUSD"), amount: parseUnits("75", 6).toString() }, receiver: settlement, sender: op.cosmos } },
+  ], "stock maker inventory: 0.05 fETH + 75 fUSD", "1400000");
   state.write({ stockTx: r.hash });
 }
 
@@ -107,7 +108,7 @@ async function unlinkOperator() {
 
 async function status() {
   const st = state.read() as any;
-  console.log("v4", st.settlement, "maker", st.makerCosmos);
+  console.log(`v${st.version}`, st.settlement, "maker", st.makerCosmos);
   console.log("rules", J(await fetchSpendingRules({ rest: NET.rest, address: maker.cosmos }).catch((e) => String(e))));
   const mnd = await pub.readContract({ address: st.settlement, abi, functionName: "mandate" }).catch((e) => String(e));
   console.log("mandate", J(mnd));

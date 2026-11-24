@@ -9,18 +9,24 @@ interface IERC20 {
 /// @title Blind: batch trading where nobody can read an order before the price is locked.
 /// @notice One market (base / quote), traded in batches:
 ///   1. The settler opens a batch.
-///   2. Each user posts only a fingerprint of their order: keccak256(order, signature hash, salt).
+///   2. The settler (the relayer) posts each user's fingerprint: keccak256(order, signature hash, salt).
 ///      The order itself never leaves the user's browser, so nobody (operator, market maker, a future
 ///      quantum computer) can read it: there is no key to steal or break.
 ///   3. The market maker commits its price curve, signed with its ML-DSA-87 key, from its own account.
 ///      The curve must sit inside a mandate the owner signed with an ML-DSA-87 key. Intake closes.
-///   4. Strictly after the commit block, each user reveals their own order; the contract checks it
-///      against the fingerprint posted earlier.
+///   4. Strictly after the commit block, each user reveals their own order (directly, or through the
+///      settler); the contract checks it against the fingerprint posted earlier.
 ///   5. The settler submits revealed orders. The contract checks every user's ML-DSA-87 signature
 ///      (QoreChain's pqcVerify precompile), computes ONE clearing price from the committed curve,
 ///      enforces every signed minimum and moves every leg atomically.
-/// @dev Nothing trusts msg.sender for prices or amounts. A stolen settler key can only settle orders
+/// @dev Access control, every state changing function:
+///      open, post, settle: onlySettler.  commit: onlyMaker, plus the agent's ML-DSA-87 signature and the
+///      owner's mandate.  reveal: the order's own user or the settler.  setMandate, withdraw: the owner's
+///      ML-DSA-87 signature over a nonce (pqcVerify 0x0A01, key from pqcKeyStatus 0x0A02).
+///      Nothing trusts msg.sender for prices or amounts. A stolen settler key can only settle orders
 ///      users really signed and revealed, at the price this contract computes.
+///      Arithmetic: Solidity 0.8 checked math everywhere; every uint to int conversion goes through _int,
+///      which reverts instead of wrapping; batch totals are capped at 2^128.
 contract BlindSettlement {
     address constant VERIFY = 0x0000000000000000000000000000000000000a01; // pqcVerify
     address constant STATUS = 0x0000000000000000000000000000000000000a02; // pqcKeyStatus
@@ -111,6 +117,7 @@ contract BlindSettlement {
 
     error NotSettler();
     error NotMaker();
+    error NotRevealer();
     error BadPhase();
     error BadSignature();
     error KeyNotProven();
@@ -123,6 +130,16 @@ contract BlindSettlement {
     error TransferFailed();
     error BadToken();
     error OverDailyLimit();
+
+    modifier onlySettler() {
+        if (msg.sender != settler) revert NotSettler();
+        _;
+    }
+
+    modifier onlyMaker() {
+        if (msg.sender != maker) revert NotMaker();
+        _;
+    }
 
     modifier nonReentrant() {
         require(locked == 1);
@@ -170,15 +187,15 @@ contract BlindSettlement {
     // ---------------------------------------------------------------- messages (what keys sign)
 
     function quoteMessage(uint64 batch, Curve memory c, uint64 quoteExpiry) public view returns (bytes memory) {
-        return abi.encode("blind-quote-v4", block.chainid, address(this), batch, c, quoteExpiry);
+        return abi.encode("blind-quote-v5", block.chainid, address(this), batch, c, quoteExpiry);
     }
 
     function mandateMessage(Mandate memory m, uint256 nonce) public view returns (bytes memory) {
-        return abi.encode("blind-mandate-v4", block.chainid, address(this), m, nonce);
+        return abi.encode("blind-mandate-v5", block.chainid, address(this), m, nonce);
     }
 
     function withdrawMessage(address token, uint256 amount, uint256 nonce) public view returns (bytes memory) {
-        return abi.encode("blind-withdraw-v4", block.chainid, address(this), token, treasury, amount, nonce);
+        return abi.encode("blind-withdraw-v5", block.chainid, address(this), token, treasury, amount, nonce);
     }
 
     function orderHash(Order calldata o) public pure returns (bytes32) {
@@ -228,15 +245,15 @@ contract BlindSettlement {
 
     // ---------------------------------------------------------------- batch lifecycle
 
-    function open() external returns (uint64 id) {
-        if (msg.sender != settler) revert NotSettler();
+    function open() external onlySettler returns (uint64 id) {
         id = ++batchCount;
         batches[id].openBlock = uint64(block.number);
         emit Opened(id);
     }
 
-    /// Anyone may post an order's fingerprint while the batch is taking orders.
-    function post(uint64 id, bytes32 fp) external {
+    /// The settler posts each user's fingerprint while the batch is taking orders. Only the settler may:
+    /// a direct post could fill a batch with junk fingerprints that nobody will ever reveal.
+    function post(uint64 id, bytes32 fp) external onlySettler {
         Batch storage b = batches[id];
         if (b.openBlock == 0 || b.commitBlock != 0) revert BadPhase();
         if (fp == 0 || b.posted >= MAX_POSTS) revert TooBig();
@@ -248,8 +265,7 @@ contract BlindSettlement {
     /// The market maker's curve, fixed while every order is still only a fingerprint. Only the maker
     /// account may commit (its key is limited on chain to this call), the agent's ML-DSA-87 signature
     /// must verify, and the curve must sit inside the owner's mandate. Closes intake.
-    function commit(uint64 id, Curve calldata c, uint64 quoteExpiry, bytes calldata sig) external {
-        if (msg.sender != maker) revert NotMaker();
+    function commit(uint64 id, Curve calldata c, uint64 quoteExpiry, bytes calldata sig) external onlyMaker {
         Batch storage b = batches[id];
         if (b.openBlock == 0 || b.commitBlock != 0) revert BadPhase();
         if (c.bidMax == 0 || c.bidMax > c.bid || c.bid >= c.ask || c.ask > c.askMax || c.maxNet == 0 || quoteExpiry <= block.number) {
@@ -267,8 +283,11 @@ contract BlindSettlement {
         emit Committed(id, c, quoteExpiry);
     }
 
-    /// Strictly after the commit block, anyone holding an order's salt (its owner) reveals it.
+    /// Strictly after the commit block, the order's own user (or the settler relaying for them) reveals it.
+    /// Nothing learned from a reveal changes the outcome: the price curve is already fixed on chain, and
+    /// every order in the batch fills at the one price this contract computes.
     function reveal(uint64 id, uint256 index, Order calldata o, bytes calldata sig, bytes32 salt) external {
+        if (msg.sender != o.user && msg.sender != settler) revert NotRevealer();
         Batch storage b = batches[id];
         if (b.commitBlock == 0 || block.number <= b.commitBlock || block.number > b.commitBlock + revealWindow || b.settleBlock != 0) {
             revert BadPhase();
@@ -303,13 +322,20 @@ contract BlindSettlement {
     /// Positive root of m*P^2 - (p0*m - d*B)*P - d*Q*S = 0 (the same form on both sides).
     function _solve(uint256 p0, uint256 d, uint256 m, uint256 q, uint256 b) internal pure returns (uint256) {
         if (d == 0) return p0;
-        int256 lin = int256(p0 * m) - int256(d * b);
+        int256 lin = _int(p0 * m) - _int(d * b);
         uint256 disc = uint256(lin * lin) + 4 * m * d * q * PRICE_SCALE;
-        int256 root = int256(_sqrt(disc));
-        int256 p = (lin + root) / int256(2 * m);
+        int256 root = _int(_sqrt(disc));
+        int256 p = (lin + root) / _int(2 * m);
         return p > 0 ? uint256(p) : 1;
     }
 
+    /// uint256 to int256 that reverts instead of wrapping (Solidity does not check this conversion).
+    function _int(uint256 x) internal pure returns (int256) {
+        if (x > uint256(type(int256).max)) revert TooBig();
+        return int256(x);
+    }
+
+    /// Babylonian square root: converges in a few dozen iterations for any uint256.
     function _sqrt(uint256 x) internal pure returns (uint256 z) {
         if (x == 0) return 0;
         z = x;
@@ -322,17 +348,23 @@ contract BlindSettlement {
 
     /// Settles revealed orders. Allowed once every posted order is revealed or the reveal window is over,
     /// so the settler cannot cut the window short to leave orders out.
-    function settle(uint64 id, uint256[] calldata indexes, Order[] calldata orders, bytes[] calldata sigs) external nonReentrant {
-        if (msg.sender != settler) revert NotSettler();
+    function settle(uint64 id, uint256[] calldata indexes, Order[] calldata orders, bytes[] calldata sigs)
+        external
+        onlySettler
+        nonReentrant
+    {
+        // Bounded work: at most MAX_ORDERS (32) orders per settlement, each a fixed number of calls.
+        if (orders.length > MAX_ORDERS) revert TooBig();
+        if (orders.length != sigs.length || orders.length != indexes.length) revert TooBig();
         Batch storage b = batches[id];
         if (b.commitBlock == 0 || b.settleBlock != 0 || block.number <= b.commitBlock) revert BadPhase();
         if (b.revealed < b.posted && block.number <= b.commitBlock + revealWindow) revert BadPhase();
         if (block.number > b.quoteExpiry || block.number > b.commitBlock + revealWindow + settleWindow) revert BadPhase();
-        if (orders.length != sigs.length || orders.length != indexes.length || orders.length > MAX_ORDERS) revert TooBig();
         b.settleBlock = uint64(block.number);
 
         Totals memory t;
         (t.quoteIn, t.baseIn) = _authenticate(id, indexes, orders, sigs);
+        if (t.quoteIn > type(uint128).max || t.baseIn > type(uint128).max) revert TooBig();
         t.price = clearingPrice(curveOf(id), t.quoteIn, t.baseIn);
         b.price = uint128(t.price);
         if (t.price != 0) { lastPrice = t.price; lastPriceBlock = uint64(block.number); }
@@ -369,7 +401,7 @@ contract BlindSettlement {
         internal returns (uint256 baseOut, uint256 quoteOut)
     {
         for (uint256 i; i < orders.length; ++i) {
-            _pull(orders[i].buy ? quote : base, orders[i].user, orders[i].amountIn);
+            _safeTransferFrom(orders[i].buy ? quote : base, orders[i].user, orders[i].amountIn);
         }
         for (uint256 i; i < orders.length; ++i) {
             Order calldata o = orders[i];
@@ -377,15 +409,15 @@ contract BlindSettlement {
             if (out < o.minOut || out == 0) revert MinOut(i);
             if (o.buy) baseOut += out;
             else quoteOut += out;
-            _pay(o.buy ? base : quote, o.user, out);
+            _safeTransfer(o.buy ? base : quote, o.user, out);
             emit Filled(id, orderHash(o), o.user, o.buy, o.amountIn, out);
         }
     }
 
     /// The maker's side: what left (or entered) its inventory. Must stay within its committed size.
     function _finish(uint64 id, uint256 maxNet, Totals memory t, uint256 n) internal {
-        int256 makerBase = int256(t.baseIn) - int256(t.baseOut);    // positive: maker bought base
-        int256 makerQuote = int256(t.quoteIn) - int256(t.quoteOut); // positive: maker received quote
+        int256 makerBase = _int(t.baseIn) - _int(t.baseOut);    // positive: maker bought base
+        int256 makerQuote = _int(t.quoteIn) - _int(t.quoteOut); // positive: maker received quote
         uint256 net = makerBase < 0 ? uint256(-makerBase) : uint256(makerBase);
         if (net > maxNet) revert TooBig();
         emit Settled(id, t.price, t.quoteIn, t.baseIn, makerBase, makerQuote, n);
@@ -403,17 +435,19 @@ contract BlindSettlement {
         _verify(owner, sig, withdrawMessage(token, amount, n));
         withdrawNonce = n + 1;
         withdrawnOn[token][day] = done;
-        _pay(IERC20(token), treasury, amount);
+        _safeTransfer(IERC20(token), treasury, amount);
         emit Withdrawn(token, amount, n);
     }
 
-    function _pull(IERC20 t, address from, uint256 amount) internal {
+    /// ERC-20 transfers: the token must have code, the call must succeed, and a returned bool must be
+    /// true. Otherwise TransferFailed, and the whole settlement or withdrawal reverts.
+    function _safeTransferFrom(IERC20 t, address from, uint256 amount) internal {
         if (address(t).code.length == 0) revert TransferFailed(); // a call to an address with no code would "succeed"
         (bool ok, bytes memory ret) = address(t).call(abi.encodeCall(IERC20.transferFrom, (from, address(this), amount)));
         if (!ok || (ret.length > 0 && !abi.decode(ret, (bool)))) revert TransferFailed();
     }
 
-    function _pay(IERC20 t, address to, uint256 amount) internal {
+    function _safeTransfer(IERC20 t, address to, uint256 amount) internal {
         if (address(t).code.length == 0) revert TransferFailed();
         (bool ok, bytes memory ret) = address(t).call(abi.encodeCall(IERC20.transfer, (to, amount)));
         if (!ok || (ret.length > 0 && !abi.decode(ret, (bool)))) revert TransferFailed();

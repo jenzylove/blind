@@ -39,6 +39,7 @@ export const ATTACKS = [
   { name: "withdraw-inventory", title: "Take the inventory", tries: "Pull fETH out of Blind, signed with our own quantum safe key." },
   { name: "settle-as-operator", title: "Pretend to be the operator", tries: "Settle the latest batch from our own account." },
   { name: "guess-a-sealed-order", title: "Read a sealed order", tries: "Take the newest order fingerprint on chain and try to open it with a made up order." },
+  { name: "flood-a-batch", title: "Flood a batch", tries: "Post a junk fingerprint straight to Blind, the way a spammer would fill a batch so real orders cannot get in." },
 ] as const;
 export type AttackName = (typeof ATTACKS)[number]["name"];
 
@@ -46,6 +47,7 @@ export type AttackName = (typeof ATTACKS)[number]["name"];
 const CONTRACT_SAYS: Record<string, string> = {
   NotMaker: "Blind refused it. Only the market maker's account may lock a price, and the agent's key on that account can do nothing else.",
   NotSettler: "Blind refused it. Only the operator's account may settle, and even the operator can only settle orders their owners signed and revealed.",
+  NotRevealer: "Blind refused it. Only an order's own user, or the operator relaying for them, may reveal it.",
   BadReveal: "Blind refused it. Our made up order does not match the fingerprint. Only the order's owner holds the secret salt that opens it.",
   OverDailyLimit: "Blind refused it. The amount is over the owner's daily withdrawal limit.",
   BadToken: "Blind refused it. Only the two market tokens can leave the contract.",
@@ -151,6 +153,14 @@ export class AttackLab {
         return this.evm(c, blind("settle", [id, [], [], []]), 200_000n);
       }
       case "guess-a-sealed-order": return this.guess();
+      case "flood-a-batch": {
+        const id = await this.read<bigint>("batchCount", []);
+        const r = await this.evm(c, blind("post", [id > 0n ? id : 1n, keccak256(randomBytes(32))]), 200_000n);
+        if (r.chainSays?.startsWith("NotSettler")) {
+          r.reason = "Blind refused it. Only the operator posts fingerprints, one for each real order it relays, so nobody can fill a batch with junk that will never be revealed.";
+        }
+        return r;
+      }
     }
   }
 
