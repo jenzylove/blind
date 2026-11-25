@@ -1041,9 +1041,9 @@ function DuelView({ d, acc, s, now, onSettled }: { d: Duel; acc: Trader; s: Stat
         <div className="laneh"><b>Sealed swap on Blind</b><span>Behind the slats until the price is locked.</span></div>
         <Qc name={STEP_TECH[0].name} className="lq">{STEP_TECH[0].rest}. Settled on QoreChain EVM, checked by pqcVerify 0x0A01</Qc>
         {d.blindErr ? <div className="msg err">{d.blindErr}</div>
-          : !d.blind ? <div className="msg">{acc.kind === "qorex" ? "Approve the order signature in QoreX, then it is sealed in this browser." : "Sealing in your browser."}</div>
+          : !d.blind ? <div className="msg">{acc.kind === "qorex" ? "Approve the order signature in QoreX, then it is sealed in this browser." : "Signing in your browser."}</div>
           : <>
-            {!blindRec && <p className="lanecap">Posted on chain as {d.blind.bytes.toLocaleString("en-US")} bytes of sealed data. No side, no amount. It opens when batch {d.blind.batch} settles, in about a minute.</p>}
+            {!blindRec && <p className="lanecap">{d.blind.bytes === 32 ? `On chain this is only a 32 byte fingerprint. No side, no amount. Your browser reveals it once batch ${d.blind.batch}'s price is locked, in about a minute.` : `Posted on chain as ${d.blind.bytes.toLocaleString("en-US")} bytes of sealed data. No side, no amount. It opens when batch ${d.blind.batch} settles, in about a minute.`}</p>}
             <OrderTrack t={d.blind} acc={acc} s={s} now={now} onSettled={onSettled} onRec={setBlindRec} lane />
           </>}
       </section>
