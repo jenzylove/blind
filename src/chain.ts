@@ -65,7 +65,18 @@ const MsgConvertCoin = {
   fromPartial(m: any) { return m; },
 };
 export const CONVERT_COIN = "/cosmos.evm.erc20.v1.MsgConvertCoin";
-export const registry = qorechainRegistry([[CONVERT_COIN, MsgConvertCoin as any]]);
+// cosmos.evm.erc20.v1.MsgConvertERC20 { string contract_address = 1; string amount = 2; string receiver = 3; string sender = 4; }
+const MsgConvertERC20 = {
+  encode(m: any, w = BinaryWriter.create()) {
+    w.uint32(10).string(m.contractAddress); w.uint32(18).string(m.amount);
+    w.uint32(26).string(m.receiver); w.uint32(34).string(m.sender);
+    return w;
+  },
+  decode(): any { throw new Error("decode not needed"); },
+  fromPartial(m: any) { return m; },
+};
+export const CONVERT_ERC20 = "/cosmos.evm.erc20.v1.MsgConvertERC20";
+export const registry = qorechainRegistry([[CONVERT_COIN, MsgConvertCoin as any], [CONVERT_ERC20, MsgConvertERC20 as any]]);
 
 async function seq(addr: string) {
   const r = await fetch(`${NET.rest}/cosmos/auth/v1beta1/accounts/${addr}`);
