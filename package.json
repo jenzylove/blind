@@ -9,7 +9,8 @@
     "server": "tsx server/index.ts",
     "verify": "tsx scripts/verify.ts",
     "test": "tsx --test test/*.test.ts && forge test",
-    "build:web": "npm --prefix web run build"
+    "build:web": "npm --prefix web run build",
+    "cbom": "qorescan scan --network testnet --address qor1ugpasg28ytchzqdts4jgajgqhwglh6y3xtuw8t --address qor1nzm5ym498uv26n7vzx6j5wudqzxqyvywx85ay2 --address qor1j4mrfz0l2mf6cmduxngm70rjejm5slj2xvrvkd --address qor14hhptmgaf3q8wpkxs2t7q9xlyp548wvk5wjea3 --tls blind.jdollar.site:443 --solidity contracts --out docs/qorescan/cbom.json"
   },
   "dependencies": {
     "@cosmjs/proto-signing": "^0.39.0",
@@ -25,5 +26,8 @@
     "hono": "^4.6.0",
     "tsx": "^4.19.0",
     "viem": "^2.58.0"
+  },
+  "devDependencies": {
+    "@qorechain/qorescan": "^0.1.0"
   }
 }

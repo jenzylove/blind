@@ -1,6 +1,7 @@
 // Trading from a QoreX wallet. QoreX signs; nothing secret ever reaches this page.
 // window.qorex = { evm (EIP-1193), native (Keplr shaped), svm }. Only testnet (qorechain-diana, EVM 9800) is used.
 import { evmToQor, qorechainRegistry } from "@qorechain/sdk";
+import { findQorexEip1193, getQorexNative, isQorexUnrecognizedChainError } from "@qorechain/qorex-types";
 import { encodeFunctionData, hexToBytes, maxUint256, type Hex } from "viem";
 import abi from "../abi.json";
 import { api, type State } from "./api";
@@ -24,8 +25,11 @@ interface QorexNative {
 interface Qorex { evm: Eip1193; native: QorexNative }
 
 export function qorex(): Qorex | null {
-  const q = (window as any).qorex;
-  return q && q.evm && q.native ? (q as Qorex) : null;
+  // QoreX's own detection helpers: the EIP-1193 provider and the native provider it injects.
+  const w = (window as any).qorex;
+  const evm = findQorexEip1193() ?? w?.evm;
+  const native = getQorexNative() ?? w?.native;
+  return evm && native ? { evm: evm as unknown as Eip1193, native: native as unknown as QorexNative } : null;
 }
 
 /** QoreX's words, made plain. Every refusal from the wallet lands here. */
@@ -34,6 +38,7 @@ export function plainQorexError(e: any): string {
   const l = m.toLowerCase();
   if (e?.code === 4001 || l.includes("rejected") || l.includes("denied")) return "You declined in QoreX. Nothing was sent.";
   if (l.includes("coin 118") || l.includes("coin-118") || l.includes("coin 60")) return NEED_COIN60;
+  if (isQorexUnrecognizedChainError(e)) return SWITCH_TESTNET;
   if (l.includes("locked")) return "QoreX is locked. Open QoreX, unlock it and try again.";
   if (l.includes("does not match the active network") || l.includes("mainnet") || l.includes("vladi")) return SWITCH_TESTNET;
   if (l.includes("insufficient")) return "Not enough test QOR in your QoreX account for the network fee. Get some from the QoreChain faucet.";
