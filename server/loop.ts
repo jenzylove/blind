@@ -15,7 +15,7 @@ import { evmWindowStatus } from "@qorechain/evm";
 import { open as openEnvelope, sealKeysFromSeed, recipientOf } from "@qorechain/qoreseal";
 import { pub, send, windowMsg, NET, artifact, state } from "../src/chain.ts";
 import { Engine, readPool, makerInventory, ORDER_T, type Order } from "../src/engine/batch.ts";
-import { makeQuote, clearingPrice, markout, SCALE, type Curve } from "../src/agent/policy.ts";
+import { makeQuote, fitToMandate, clearingPrice, markout, SCALE, type Curve } from "../src/agent/policy.ts";
 
 const { abi } = artifact("BlindSettlement");
 const INTAKE_MS = Number(process.env.INTAKE_MS ?? 20_000);
@@ -44,6 +44,7 @@ export class BatchLoop {
   private queue: Promise<unknown> = Promise.resolve();
   private extMoves: bigint[] = [];
   private lastMidAfter: bigint | null = null;
+  private lastMidAt = 0; // ms; a pool move across a long idle gap is not batch volatility
   private standingSeed: Uint8Array;
   log: (s: string) => void = (s) => console.log(`[loop] ${s}`);
 
@@ -225,13 +226,16 @@ export class BatchLoop {
       // The market maker quotes from public data only, inside the owner's mandate.
       const pool = await readPool();
       const now = (pool.quote * SCALE) / pool.base;
-      if (this.lastMidAfter) this.extMoves.push(((now > this.lastMidAfter ? now - this.lastMidAfter : this.lastMidAfter - now) * 10_000n) / this.lastMidAfter);
+      if (this.lastMidAfter && Date.now() - this.lastMidAt < 30 * 60_000) this.extMoves.push(((now > this.lastMidAfter ? now - this.lastMidAfter : this.lastMidAfter - now) * 10_000n) / this.lastMidAfter);
       const ext = this.extMoves.slice(-5).reduce((a, b) => (b > a ? b : a), 0n);
       const inv = await makerInventory(this.settlement, this.engine.hedger);
       const q = makeQuote(pool, { base: inv.contract.base + inv.hedger.base, quote: inv.contract.quote + inv.hedger.quote }, ext);
       const m = (await this.engine.read<any>("mandate", [])) as any[];
       const maxNet = q.maxNet < BigInt(m[0]) ? q.maxNet : BigInt(m[0]);
-      const curve: Curve = { bid: q.bid, ask: q.ask, bidMax: q.bidMax, askMax: q.askMax, maxNet };
+      const [lastPrice, lastPriceBlock, head] = await Promise.all([this.engine.read<bigint>("lastPrice", []), this.engine.read<bigint>("lastPriceBlock", []), pub.getBlockNumber()]);
+      const fit = fitToMandate(q, { maxSpreadBps: BigInt(m[1]), bandBps: BigInt(m[2]), lastPrice, bandApplies: lastPrice > 0n && head <= BigInt(lastPriceBlock) + BigInt(m[3]) });
+      if (!fit) throw new Error("no curve fits inside the owner's mandate right now; no price locked");
+      const curve: Curve = { ...fit, maxNet };
       if (!(await this.engine.read<boolean>("withinMandate", [curve]))) throw new Error("the market maker's curve is outside the owner's mandate; no price locked");
       const quoteExpiry = BigInt(Number(await pub.getBlockNumber()) + 300);
       const qmsg = await this.engine.read<Hex>("quoteMessage", [id, curve, quoteExpiry]);
@@ -335,6 +339,7 @@ export class BatchLoop {
       rec.hedge = await this.engine.hedge(BigInt(ev.args.makerBase), this.log);
       const after = await readPool();
       this.lastMidAfter = (after.quote * SCALE) / after.base;
+      this.lastMidAt = Date.now();
       rec.midAfterHedge = this.lastMidAfter.toString();
     } catch (e: any) {
       rec.error = String(e.message).slice(0, 300);

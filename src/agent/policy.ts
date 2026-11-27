@@ -140,3 +140,29 @@ export function markout(makerBase: bigint, makerQuote: bigint, laterMid: bigint,
   const afterHedge = fill + hedgeQuote + (hedgeBase * laterMid) / SCALE;
   return { fill, afterHedge };
 }
+
+export interface MandateLimits { maxSpreadBps: bigint; bandBps: bigint; lastPrice: bigint; bandApplies: boolean }
+
+/**
+ * Fit a curve inside the owner's mandate instead of refusing to trade. If the tiny size spread is
+ * wider than the mandate allows, both ends move in symmetrically around their middle to 90% of the
+ * cap, and the large size ends keep their distance from them. If the band around the last price
+ * applies, the large size ends are pulled inside it. Returns null when no ordered curve fits.
+ */
+export function fitToMandate(c: { bid: bigint; ask: bigint; bidMax: bigint; askMax: bigint }, lim: MandateLimits) {
+  let { bid, ask, bidMax, askMax } = c;
+  if ((ask - bid) * BPS > lim.maxSpreadBps * bid) {
+    const mid = (bid + ask) / 2n;
+    const half = (mid * lim.maxSpreadBps * 9n) / (BPS * 20n);
+    const nb = mid - half, na = mid + half;
+    bidMax = nb - (bid - bidMax); askMax = na + (askMax - ask);
+    bid = nb; ask = na;
+  }
+  if (lim.bandApplies && lim.lastPrice > 0n) {
+    const lo = (lim.lastPrice * (BPS - lim.bandBps)) / BPS + 1n, hi = (lim.lastPrice * (BPS + lim.bandBps)) / BPS;
+    if (bidMax < lo) bidMax = lo;
+    if (askMax > hi) askMax = hi;
+  }
+  if (!(bidMax > 0n && bidMax <= bid && bid < ask && ask <= askMax)) return null;
+  return { bid, ask, bidMax, askMax };
+}

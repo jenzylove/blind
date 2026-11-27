@@ -88,3 +88,18 @@ test("markout: selling base at the ask then the price falls is a gain", () => {
   const h = markout(-10_000_000_000_000_000n, 29_000_000n, 2_800_000_000n, 10_000_000_000_000_000n, -28_500_000n);
   assert.equal(h.afterHedge, 500_000n);
 });
+
+import { fitToMandate } from "../src/agent/policy.ts";
+test("a curve wider than the mandate is fitted inside it, keeping its shape", () => {
+  const c = { bid: 5_400_000_000n, ask: 6_000_000_000n, bidMax: 5_300_000_000n, askMax: 6_100_000_000n }; // ~11% spread
+  const f = fitToMandate(c, { maxSpreadBps: 300n, bandBps: 1500n, lastPrice: 0n, bandApplies: false })!;
+  assert.ok(f, "fits");
+  assert.ok((f.ask - f.bid) * 10_000n <= 300n * f.bid, "spread within 3%");
+  assert.equal(f.bid - f.bidMax, c.bid - c.bidMax);
+  assert.equal(f.askMax - f.ask, c.askMax - c.ask);
+  assert.ok(f.bidMax <= f.bid && f.bid < f.ask && f.ask <= f.askMax);
+});
+test("a curve that cannot sit inside the band is refused", () => {
+  const c = { bid: 5_000_000_000n, ask: 5_100_000_000n, bidMax: 4_900_000_000n, askMax: 5_200_000_000n };
+  assert.equal(fitToMandate(c, { maxSpreadBps: 300n, bandBps: 500n, lastPrice: 6_000_000_000n, bandApplies: true }), null);
+});
