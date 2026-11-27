@@ -9,6 +9,7 @@ Built for Build Before Q-Day, the QoreChain Developer Fest (Post-Quantum dApp).
 | | |
 |---|---|
 | Settlement contract (v5) | [`0x143e9152c9a1b97668d6fbd23126e1616275aac7`](https://explore.qore.network/address/0x143e9152c9a1b97668d6fbd23126e1616275aac7) on `qorechain-diana` (on the explorer, switch to Testnet at the top right) |
+| Demo video (3 min) | https://youtu.be/sAV76SPZ7qk |
 | Every batch, misses included | https://blind.jdollar.site/proof |
 | The market maker's spending rule and the owner's mandate, read live | https://blind.jdollar.site/proof and `/api/agent` |
 | Security audits: QCAI scores 78 on the live contract (72 before the v5 fixes); every finding mapped to code and a test | [docs/AUDIT.md](docs/AUDIT.md) |
