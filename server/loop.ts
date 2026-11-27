@@ -232,8 +232,8 @@ export class BatchLoop {
       const q = makeQuote(pool, { base: inv.contract.base + inv.hedger.base, quote: inv.contract.quote + inv.hedger.quote }, ext);
       const m = (await this.engine.read<any>("mandate", [])) as any[];
       const maxNet = q.maxNet < BigInt(m[0]) ? q.maxNet : BigInt(m[0]);
-      const [lastPrice, lastPriceBlock, head] = await Promise.all([this.engine.read<bigint>("lastPrice", []), this.engine.read<bigint>("lastPriceBlock", []), pub.getBlockNumber()]);
-      const fit = fitToMandate(q, { maxSpreadBps: BigInt(m[1]), bandBps: BigInt(m[2]), lastPrice, bandApplies: lastPrice > 0n && head <= BigInt(lastPriceBlock) + BigInt(m[3]) });
+      const [lastPrice, lastPriceBlock, headNow] = await Promise.all([this.engine.read<bigint>("lastPrice", []), this.engine.read<bigint>("lastPriceBlock", []), pub.getBlockNumber()]);
+      const fit = fitToMandate(q, { maxSpreadBps: BigInt(m[1]), bandBps: BigInt(m[2]), lastPrice, bandApplies: lastPrice > 0n && headNow <= BigInt(lastPriceBlock) + BigInt(m[3]) });
       if (!fit) throw new Error("no curve fits inside the owner's mandate right now; no price locked");
       const curve: Curve = { ...fit, maxNet };
       if (!(await this.engine.read<boolean>("withinMandate", [curve]))) throw new Error("the market maker's curve is outside the owner's mandate; no price locked");
